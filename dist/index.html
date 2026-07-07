@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ROCK BEAT (ロック・ビート) - サイバーリズムアクション</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+  <link rel="stylesheet" crossorigin href="/assets/index-Dgs0FmXc.css">
+</head>
+<body>
+  <div id="app">
+    <!-- スタート画面オーバーレイ -->
+    <div id="start-overlay" class="overlay">
+      <div class="start-card">
+        <h1 class="game-title">ROCK BEAT</h1>
+        <p class="game-subtitle">〜リズムでワイリーロボを駆逐せよ！〜</p>
+        <div class="instructions-preview">
+          <h3>[ SYSTEM GUIDE ]</h3>
+          <p>8-bitリズム（BPM 120）に合わせてキーを入力し、システムを同期せよ！</p>
+          <div class="key-grid">
+            <div class="key-item"><span class="key-badge">A</span> or <span class="key-badge">J</span><span class="key-desc">ROCK (駆動)</span></div>
+            <div class="key-item"><span class="key-badge">S</span> or <span class="key-badge">K</span><span class="key-desc">SHOT (射撃)</span></div>
+            <div class="key-item"><span class="key-badge">D</span> or <span class="key-badge">L</span><span class="key-desc">BARI (防壁)</span></div>
+            <div class="key-item"><span class="key-badge">F</span> or <span class="key-badge">I</span><span class="key-desc">SYNC (同調)</span></div>
+          </div>
+          <div class="commands-preview">
+            <h4>基本プログラム:</h4>
+            <ul>
+              <li><strong>ダッシュ前進:</strong> ROCK・ROCK・ROCK・SHOT (<span class="command-keys">A A A S</span>)</li>
+              <li><strong>バスター射撃:</strong> SHOT・SHOT・ROCK・SHOT (<span class="command-keys">S S A S</span>)</li>
+            </ul>
+            <p class="evolution-note">※アーマー換装でシールド、チャージ、E缶機能が解放！</p>
+          </div>
+        </div>
+        <button id="start-btn" class="glow-btn">START SYSTEM</button>
+      </div>
+    </div>
+
+    <!-- ゲームオーバー / ステージクリア オーバーレイ -->
+    <div id="gameover-overlay" class="overlay hidden">
+      <div class="start-card text-center">
+        <h1 id="gameover-title" class="text-danger">MISSION FAILED</h1>
+        <p id="gameover-reason">ワイリー軍団に敗北しました...</p>
+        <button id="restart-btn" class="glow-btn">RETRY MISSION</button>
+      </div>
+    </div>
+
+    <header class="game-header">
+      <div class="brand">
+        <span class="brand-icon">🤖</span>
+        <h1 class="brand-title">ROCK BEAT</h1>
+      </div>
+      <div class="stage-info">
+        <span id="stage-text">STAGE 1</span>
+        <span id="floor-text">WAVE 1/5 (BOSS WAVE まで 4)</span>
+      </div>
+      <div class="stats-summary">
+        <div><span class="label">ネジ (METAL):</span> <span id="gold-value" class="value">0</span></div>
+        <div><span class="label">ボス撃破数:</span> <span id="boss-kills" class="value">0 / 5</span></div>
+      </div>
+    </header>
+
+    <main class="game-layout">
+      <!-- 左側: ゲーム画面 (Canvas) -->
+      <section class="game-screen-area">
+        <!-- メッセージ・エフェクト表示用 -->
+        <div class="canvas-container">
+          <!-- ロックマン風の縦型HPゲージ -->
+          <div class="mega-hp-container">
+            <div class="mega-hp-label">HP</div>
+            <div class="mega-hp-bar" id="mega-hp-bar">
+              <!-- ドットセグメントがJSで動的に追加される -->
+            </div>
+          </div>
+          
+          <canvas id="game-canvas" width="800" height="400"></canvas>
+          <div id="rhythm-feedback" class="rhythm-feedback">READY</div>
+          <div id="combo-display" class="combo-display hidden">0 SYNC</div>
+          <div id="fever-banner" class="fever-banner hidden">OVER DRIVE!!</div>
+          <div id="player-input-echo" class="input-echo"></div>
+        </div>
+
+        <!-- コマンド指南HUD (ゲーム画面外・横並び) -->
+        <div id="command-guide-hud" class="command-guide-hud">
+          <div class="hud-title">SYSTEM COMMANDS (KEYBOARD: A S D F / J K L I)</div>
+          <div class="hud-cmd-list">
+            <div class="hud-cmd" id="hud-cmd-walk">
+              <span class="hud-cmd-name">DASH</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn pata">A</span>
+                <span class="p-btn pata">A</span>
+                <span class="p-btn pata">A</span>
+                <span class="p-btn pon">S</span>
+              </span>
+            </div>
+            <div class="hud-cmd" id="hud-cmd-attack">
+              <span class="hud-cmd-name">ATTACK</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn pon">S</span>
+                <span class="p-btn pon">S</span>
+                <span class="p-btn pata">A</span>
+                <span class="p-btn pon">S</span>
+              </span>
+            </div>
+            <div class="hud-cmd" id="hud-cmd-retreat">
+              <span class="hud-cmd-name">RETREAT</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn pon">S</span>
+                <span class="p-btn pata">A</span>
+                <span class="p-btn pon">S</span>
+                <span class="p-btn pata">A</span>
+              </span>
+            </div>
+            <div class="hud-cmd" id="hud-cmd-jump">
+              <span class="hud-cmd-name">JUMP</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn pon">S</span>
+                <span class="p-btn chaka">D</span>
+                <span class="p-btn pon">S</span>
+                <span class="p-btn chaka">D</span>
+              </span>
+            </div>
+            <div class="hud-cmd" id="hud-cmd-duck">
+              <span class="hud-cmd-name">DUCK</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn chaka">D</span>
+                <span class="p-btn pon">S</span>
+                <span class="p-btn chaka">D</span>
+                <span class="p-btn pon">S</span>
+              </span>
+            </div>
+            <div class="hud-cmd locked" id="hud-cmd-defend">
+              <span class="hud-cmd-name">SHIELD</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn chaka">D</span>
+                <span class="p-btn chaka">D</span>
+                <span class="p-btn pata">A</span>
+                <span class="p-btn pon">S</span>
+              </span>
+            </div>
+            <div class="hud-cmd locked" id="hud-cmd-charge">
+              <span class="hud-cmd-name">CHARGE</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn don">F</span>
+                <span class="p-btn don">F</span>
+                <span class="p-btn chaka">D</span>
+                <span class="p-btn chaka">D</span>
+              </span>
+            </div>
+            <div class="hud-cmd locked" id="hud-cmd-miracle">
+              <span class="hud-cmd-name">E-TANK</span>
+              <span class="hud-cmd-pattern">
+                <span class="p-btn don">F</span>
+                <span class="p-btn don">F</span>
+                <span class="p-btn don">F</span>
+                <span class="p-btn don">F</span>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <!-- リズムインジケーター（拍子に合わせて光る） -->
+        <div class="rhythm-bar">
+          <div class="beat-dot" id="beat-1"></div>
+          <div class="beat-dot" id="beat-2"></div>
+          <div class="beat-dot" id="beat-3"></div>
+          <div class="beat-dot" id="beat-4"></div>
+          <div class="beat-progress-container">
+            <div id="beat-progress-bar"></div>
+          </div>
+        </div>
+
+        <!-- コマンドパッド（キーボード押下で光る） -->
+        <div class="drum-pads">
+          <div class="drum-pad" id="pad-pata">
+            <span class="pad-key">A / J</span>
+            <span class="pad-sound">PATA (ROCK)</span>
+          </div>
+          <div class="drum-pad" id="pad-pon">
+            <span class="pad-key">S / K</span>
+            <span class="pad-sound">PON (SHOT)</span>
+          </div>
+          <div class="drum-pad" id="pad-chaka">
+            <span class="pad-key">D / L</span>
+            <span class="pad-sound">CHAKA (BARI)</span>
+          </div>
+          <div class="drum-pad" id="pad-don">
+            <span class="pad-key">F / I</span>
+            <span class="pad-sound">DON (SYNC)</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- 右側: ロックマン管理 (ステータス・インベントリ) -->
+      <section class="dashboard-area">
+        <!-- タブ切り替えボタン -->
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="status-tab">STATUS</button>
+          <button class="tab-btn" data-tab="inventory-tab">CUSTOM PARTS</button>
+        </div>
+
+        <!-- タブコンテンツ1: ステータス・レベル・アーマー -->
+        <div id="status-tab" class="tab-content active">
+          <div class="glass-panel character-panel">
+            <div class="char-header">
+              <div class="char-avatar" id="hero-avatar">🤖</div>
+              <div class="char-meta">
+                <h2 id="hero-class">NORMAL ROCK (Lv. 1)</h2>
+                <div class="xp-bar-container">
+                  <div class="xp-bar" id="hero-xp-bar" style="width: 0%;"></div>
+                  <span class="xp-text" id="hero-xp-text">0 / 100 XP</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- ステータス値 -->
+            <div class="stats-grid">
+              <div class="stat-row">
+                <span class="stat-label">MAX LIFE:</span>
+                <span class="stat-value" id="stat-hp">100</span>
+                <button class="sp-btn hidden" id="sp-hp-btn">+</button>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">BUSTER OUT (ATK):</span>
+                <span class="stat-value" id="stat-atk">15</span>
+                <button class="sp-btn hidden" id="sp-atk-btn">+</button>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">ARMOR SHIELD (DEF):</span>
+                <span class="stat-value" id="stat-def">5</span>
+                <button class="sp-btn hidden" id="sp-def-btn">+</button>
+              </div>
+              <div class="stat-row">
+                <span class="stat-label">CRIT SYNC:</span>
+                <span class="stat-value" id="stat-crit">5%</span>
+              </div>
+            </div>
+
+            <!-- SP（ステータスポイント）通知 -->
+            <div id="sp-warning" class="sp-warning hidden">
+              UPGRADE MODULES AVAIL: <span id="sp-points">0</span>! CLICK [+] TO UPGRADE.
+            </div>
+
+            <!-- アーマー換装セクション -->
+            <div class="evolution-panel">
+              <h3>ARMOR REPLI-SYSTEM</h3>
+              <div class="evolution-steps">
+                <div class="evo-step active" id="evo-0">
+                  <div class="evo-icon">🤖</div>
+                  <span class="evo-name">NORMAL</span>
+                  <span class="evo-level">Lv.1</span>
+                </div>
+                <div class="evo-step" id="evo-1">
+                  <div class="evo-icon">🐕</div>
+                  <span class="evo-name">RUSH</span>
+                  <span class="evo-level">Lv.5</span>
+                </div>
+                <div class="evo-step" id="evo-2">
+                  <div class="evo-icon">💪</div>
+                  <span class="evo-name">POWER</span>
+                  <span class="evo-level">Lv.10</span>
+                </div>
+                <div class="evo-step" id="evo-3">
+                  <div class="evo-icon">✈️</div>
+                  <span class="evo-name">JET</span>
+                  <span class="evo-level">Lv.15</span>
+                </div>
+                <div class="evo-step" id="evo-4">
+                  <div class="evo-icon">👑</div>
+                  <span class="evo-name">ULTIMATE</span>
+                  <span class="evo-level">Lv.20</span>
+                </div>
+              </div>
+              <p class="evo-info" id="evo-info-text">NEXT ARMOR REPLI AT LV. 5</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- タブコンテンツ2: インベントリ & カプセル -->
+        <div id="inventory-tab" class="tab-content">
+          <div class="glass-panel inventory-panel">
+            <!-- 装備中のパーツ -->
+            <div class="equipped-weapon-area">
+              <h3>ACTIVE BUSTER PART</h3>
+              <div class="equipped-card" id="equipped-card">
+                <div class="eq-icon" id="eq-icon">🔫</div>
+                <div class="eq-details">
+                  <h4 id="eq-name">BASIC BUSTER</h4>
+                  <p id="eq-stats">ATK +0, HP +0</p>
+                  <span class="rarity-badge rarity-common">COMMON</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- 未解析のデータカプセル -->
+            <div class="treasure-chests-area">
+              <h3>UNANALYZED CAPSULES</h3>
+              <div class="chest-grid" id="chest-grid">
+                <!-- カプセルが動的に追加される -->
+                <p class="no-chests">NO CAPSULES IN BUFFER. DEFEAT ENEMY ROBOTS.</p>
+              </div>
+            </div>
+
+            <!-- パーツ一覧 -->
+            <div class="weapons-list-area">
+              <h3>BUSTER PARTS BUFFER</h3>
+              <div class="weapons-grid" id="weapons-grid">
+                <!-- 武器が動的に追加される -->
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- コマンド説明・ヘルプ -->
+    <footer class="game-footer">
+      <div class="help-section">
+        <h3>ACTIVE PROGRAMS:</h3>
+        <div class="command-badges">
+          <div class="cmd-badge"><span class="cmd-name">DASH</span> <span class="cmd-notes">A A A S (or J J J K)</span></div>
+          <div class="cmd-badge"><span class="cmd-name">ATTACK</span> <span class="cmd-notes">S S A S (or K K J K)</span></div>
+          <div class="cmd-badge"><span class="cmd-name">RETREAT</span> <span class="cmd-notes">S A S A (or K J K J)</span></div>
+          <div class="cmd-badge"><span class="cmd-name">JUMP</span> <span class="cmd-notes">S D S D (or K L K L)</span></div>
+          <div class="cmd-badge"><span class="cmd-name">DUCK</span> <span class="cmd-notes">D S D S (or L K L K)</span></div>
+          <div class="cmd-badge disabled" id="help-cmd-defend"><span class="cmd-name">SHIELD (Lv.5)</span> <span class="cmd-notes">D D A S (or L L J K)</span></div>
+          <div class="cmd-badge disabled" id="help-cmd-charge"><span class="cmd-name">CHARGE (Lv.10)</span> <span class="cmd-notes">F F D D (or I I L L)</span></div>
+          <div class="cmd-badge disabled" id="help-cmd-miracle"><span class="cmd-name">E-TANK (Lv.15)</span> <span class="cmd-notes">F F F F (or I I I I)</span></div>
+        </div>
+      </div>
+      <div class="footer-credit">
+        © 2026 ROCK BEAT CYBERNETICS CO.
+      </div>
+    </footer>
+  </div>
+  <script src="game.js"></script>
+</body>
+</html>
