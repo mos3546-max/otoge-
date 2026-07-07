@@ -2,65 +2,57 @@
 // ROCK BEAT - game.js (Mega Man Style Rhythm Action Engine)
 // ----------------------------------------------------
 
-// Canvas2DコンテキストがCSS変数を解釈できるようにプロトタイプを拡張します
-(function() {
-  if (typeof window === 'undefined' || !window.CanvasRenderingContext2D) return;
+// スプライトアセットのロード＆動的背景透過システム
+let playerSpriteCanvas = null;
+let enemySpriteCanvas = null;
 
-  const getCssColor = (varStr) => {
-    if (typeof varStr !== 'string' || !varStr.startsWith('var(')) return varStr;
-    const name = varStr.substring(4, varStr.length - 1).trim();
-    const val = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
-    if (val) return val;
-    // CSS変数のロード前、あるいはフォールバック用カラーマップ
-    const fallback = {
-      '--mega-blue': '#0058d8',
-      '--mega-cyan': '#00e0ff',
-      '--mega-yellow': '#ffe000',
-      '--mega-red': '#ff2060',
-      '--mega-gray': '#808898',
-      '--neon-green': '#00ff66'
-    };
-    return fallback[name] || '#ffffff';
-  };
-
-  const proto = window.CanvasRenderingContext2D.prototype;
-  
-  const originalFillStyleDescriptor = Object.getOwnPropertyDescriptor(proto, 'fillStyle');
-  Object.defineProperty(proto, 'fillStyle', {
-    get: function() {
-      return originalFillStyleDescriptor.get.call(this);
-    },
-    set: function(val) {
-      originalFillStyleDescriptor.set.call(this, getCssColor(val));
-    }
-  });
-
-  const originalStrokeStyleDescriptor = Object.getOwnPropertyDescriptor(proto, 'strokeStyle');
-  Object.defineProperty(proto, 'strokeStyle', {
-    get: function() {
-      return originalStrokeStyleDescriptor.get.call(this);
-    },
-    set: function(val) {
-      originalStrokeStyleDescriptor.set.call(this, getCssColor(val));
-    }
-  });
-
-  const originalShadowColorDescriptor = Object.getOwnPropertyDescriptor(proto, 'shadowColor');
-  Object.defineProperty(proto, 'shadowColor', {
-    get: function() {
-      return originalShadowColorDescriptor.get.call(this);
-    },
-    set: function(val) {
-      originalShadowColorDescriptor.set.call(this, getCssColor(val));
-    }
-  });
-})();
-
-// スプライトアセットのロード
 const playerSprite = new Image();
-playerSprite.src = 'player_sprite.jpg';
+playerSprite.src = '/player_sprite.jpg';
+playerSprite.onload = () => {
+  playerSpriteCanvas = createTransparentImage(playerSprite);
+};
+
 const enemySprite = new Image();
-enemySprite.src = 'enemy_sprite.jpg';
+enemySprite.src = '/enemy_sprite.jpg';
+enemySprite.onload = () => {
+  enemySpriteCanvas = createTransparentImage(enemySprite);
+};
+
+/**
+ * 読み込んだ画像の特定背景色を自動検出して透明化した Canvas 要素を作成します。
+ */
+function createTransparentImage(img) {
+  const offCanvas = document.createElement('canvas');
+  offCanvas.width = img.naturalWidth;
+  offCanvas.height = img.naturalHeight;
+  const offCtx = offCanvas.getContext('2d');
+  offCtx.drawImage(img, 0, 0);
+  
+  const imgData = offCtx.getImageData(0, 0, offCanvas.width, offCanvas.height);
+  const data = imgData.data;
+  
+  // 左上のピクセル色を背景色として検出
+  const rBg = data[0];
+  const gBg = data[1];
+  const bBg = data[2];
+  
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const g = data[i+1];
+    const b = data[i+2];
+    
+    const dist = Math.sqrt((r - rBg)*(r - rBg) + (g - gBg)*(g - gBg) + (b - bBg)*(b - bBg));
+    const isWhite = (r > 225 && g > 225 && b > 225);
+    const isBlack = (r < 30 && g < 30 && b < 30);
+    
+    if (dist < 60 || isWhite || isBlack) {
+      data[i+3] = 0;
+    }
+  }
+  
+  offCtx.putImageData(imgData, 0, 0);
+  return offCanvas;
+}
 
 /**
  * 8-bit およびモダンシンセサイザーサウンドの生成・再生を管理するクラス。
@@ -468,7 +460,11 @@ const state = {
   enemyX: 600, // 敵の座標
   playerActionAnim: null, // プレイヤーの行動アニメ状態
   enemyActionAnim: null, // 敵の行動アニメ状態
-  enemyHurtTime: 0 // 敵被弾時の赤白フラッシュタイマー用
+  enemyHurtTime: 0, // 敵被弾時の赤白フラッシュタイマー用
+  shakeTime: 0, // 画面揺れ持続時間 (ms)
+  shakeIntensity: 0, // 画面揺れの強さ (px)
+  hitStopFrames: 0, // ヒットストップの残りフレーム数
+  bossWarningTime: 0 // ボス出現警告演出タイマー (ms)
 };
 
 /**
@@ -519,6 +515,7 @@ function drawBackground() {
   if (!canvas || !ctx) return;
   const width = canvas.width;
   const height = canvas.height;
+  const gridCount = 20;
   
   // 1. 背景空グラデーション (フィーバー時はサイケデリック、通常時はディープネイビー)
   const skyGrad = ctx.createLinearGradient(0, 0, 0, 300);
@@ -537,7 +534,7 @@ function drawBackground() {
   // --- A. デジタル・マトリックス・フォール (0と1のバイナリの雨) ---
   // ステートレスな決定論的ノイズでシアン色に流れる情報雨を降らせます。
   ctx.fillStyle = state.fever ? 'rgba(255, 63, 222, 0.16)' : 'rgba(0, 240, 255, 0.16)';
-  ctx.font = '8px var(--font-pixel)';
+  ctx.font = '8px Courier New, monospace';
   ctx.textAlign = 'center';
   const binaryColumns = 30;
   for (let col = 0; col < binaryColumns; col++) {
@@ -570,12 +567,12 @@ function drawBackground() {
   ctx.save();
   const beatPulse = 1.0 + Math.max(0, 1.0 - ((Date.now() - state.lastBeatTime) / state.beatInterval)) * 0.14;
   const sunGrad = ctx.createLinearGradient(0, 40, 0, 220);
-  sunGrad.addColorStop(0, 'var(--mega-yellow)');
-  sunGrad.addColorStop(0.5, 'var(--mega-red)');
+  sunGrad.addColorStop(0, '#ffe000');
+  sunGrad.addColorStop(0.5, '#ff2060');
   sunGrad.addColorStop(1, 'rgba(11, 22, 79, 0)');
   ctx.fillStyle = sunGrad;
   
-  ctx.shadowColor = 'var(--mega-red)';
+  ctx.shadowColor = '#ff2060';
   ctx.shadowBlur = 24 * beatPulse;
   
   const sunR = 65 * beatPulse;
@@ -634,7 +631,7 @@ function drawBackground() {
   ctx.fillRect(0, 300, width, 100);
   
   // 地平線ネオンライン
-  ctx.strokeStyle = state.fever ? 'var(--mega-red)' : '#00f0ff';
+  ctx.strokeStyle = state.fever ? '#ff2060' : '#00f0ff';
   ctx.lineWidth = 4;
   ctx.beginPath();
   ctx.moveTo(0, 300);
@@ -689,8 +686,8 @@ function drawBackground() {
 
   // 進行表示HUD
   if (state.phase === 'move') {
-    ctx.fillStyle = 'var(--mega-yellow)';
-    ctx.font = 'bold 10px var(--font-pixel)';
+    ctx.fillStyle = '#ffe000';
+    ctx.font = 'bold 10px Courier New, monospace';
     ctx.textAlign = 'center';
     ctx.shadowColor = '#000';
     ctx.shadowBlur = 6;
@@ -789,7 +786,7 @@ function drawPlayer() {
     ctx.stroke();
   }
   const notePos = (Date.now() * 0.04) % 55;
-  ctx.fillStyle = 'var(--mega-yellow)';
+  ctx.fillStyle = '#ffe000';
   ctx.fillRect(-10 - notePos, scarfWave - 8 + Math.sin(notePos * 0.12) * 6, 3, 3);
   ctx.fillRect(-25 - ((notePos + 25) % 55), scarfWave - 4 + Math.sin((notePos + 25) * 0.12) * 6, 3, 3);
   ctx.restore();
@@ -802,9 +799,9 @@ function drawPlayer() {
   }
 
   // --- F. リアル・ドットスプライト描画 (ダウンロードアセット対応) ---
-  if (playerSprite.complete && playerSprite.naturalWidth !== 0) {
+  if (playerSpriteCanvas) {
     ctx.save();
-    ctx.drawImage(playerSprite, -32, -75, 64, 75);
+    ctx.drawImage(playerSpriteCanvas, -32, -75, 64, 75);
 
     // 被弾時の赤・白フラッシュ効果
     if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
@@ -815,17 +812,17 @@ function drawPlayer() {
     ctx.restore();
   } else {
     // --- G. フォールバック・ベクター液晶ドットキャラクター描画 ---
-    let suitColor = 'var(--mega-blue)';
-    let accentColor = 'var(--mega-cyan)';
-    if (p.evoIndex === 1) { suitColor = 'var(--mega-red)'; accentColor = '#fff'; }
-    else if (p.evoIndex === 2) { suitColor = '#2b2b2b'; accentColor = 'var(--mega-yellow)'; }
+    let suitColor = '#0058d8';
+    let accentColor = '#00e0ff';
+    if (p.evoIndex === 1) { suitColor = '#ff2060'; accentColor = '#fff'; }
+    else if (p.evoIndex === 2) { suitColor = '#2b2b2b'; accentColor = '#ffe000'; }
     else if (p.evoIndex === 3) { suitColor = '#6011a4'; accentColor = '#ffd000'; }
     else if (p.evoIndex === 4) { suitColor = '#10052c'; accentColor = '#ff3fde'; }
 
     if (state.fever) {
       const isGoldTick = Math.floor(Date.now() / 60) % 2 === 0;
-      suitColor = isGoldTick ? 'var(--mega-yellow)' : '#fff';
-      accentColor = isGoldTick ? '#fff' : 'var(--mega-yellow)';
+      suitColor = isGoldTick ? '#ffe000' : '#fff';
+      accentColor = isGoldTick ? '#fff' : '#ffe000';
     }
 
     if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
@@ -864,14 +861,14 @@ function drawPlayer() {
     ctx.fillRect(-10, -71, 22, 4);
 
     // C. サイバー・ネオンヘッドホン
-    ctx.strokeStyle = 'var(--mega-yellow)';
+    ctx.strokeStyle = '#ffe000';
     ctx.lineWidth = 3;
     ctx.beginPath();
     ctx.arc(1, -54, 17, Math.PI, 0);
     ctx.stroke();
     
-    ctx.fillStyle = 'var(--neon-green)';
-    ctx.shadowColor = 'var(--neon-green)';
+    ctx.fillStyle = '#00ff66';
+    ctx.shadowColor = '#00ff66';
     ctx.shadowBlur = 6;
     ctx.fillRect(-17, -60, 5, 12);
     ctx.fillRect(14, -60, 5, 12);
@@ -883,7 +880,7 @@ function drawPlayer() {
 
     // D. イコライザーバイザー
     ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
-    ctx.shadowColor = 'var(--mega-cyan)';
+    ctx.shadowColor = '#00e0ff';
     ctx.shadowBlur = 8;
     ctx.fillRect(-9, -53, 16, 7);
     ctx.shadowBlur = 0;
@@ -901,9 +898,9 @@ function drawPlayer() {
     ctx.rotate(weaponRot);
     
     let glowColor = null;
-    if (wp.rarity === 'uncommon') glowColor = 'var(--neon-green)';
-    else if (wp.rarity === 'rare') glowColor = 'var(--mega-cyan)';
-    else if (wp.rarity === 'legendary') glowColor = 'var(--mega-yellow)';
+    if (wp.rarity === 'uncommon') glowColor = '#00ff66';
+    else if (wp.rarity === 'rare') glowColor = '#00e0ff';
+    else if (wp.rarity === 'legendary') glowColor = '#ffe000';
 
     if (glowColor) {
       ctx.shadowColor = glowColor;
@@ -917,14 +914,14 @@ function drawPlayer() {
     ctx.fillRect(4, -5, 8, 2);
     ctx.fillRect(4, 3, 8, 2);
 
-    ctx.fillStyle = glowColor || 'var(--mega-yellow)';
+    ctx.fillStyle = glowColor || '#ffe000';
     ctx.fillRect(17, -5, 3, 10);
     
     if (showMuzzleFlash) {
       ctx.save();
       ctx.strokeStyle = '#ffffff';
       ctx.lineWidth = 3;
-      ctx.shadowColor = glowColor || 'var(--mega-cyan)';
+      ctx.shadowColor = glowColor || '#00e0ff';
       ctx.shadowBlur = 15;
       ctx.beginPath();
       ctx.arc(22, 0, 10, -Math.PI*0.5, Math.PI*0.5);
@@ -938,9 +935,9 @@ function drawPlayer() {
   // --- H. アクティブ・バトルエフェクトの描画 ---
   if (shieldActive) {
     ctx.save();
-    ctx.strokeStyle = 'var(--mega-red)';
+    ctx.strokeStyle = '#ff2060';
     ctx.lineWidth = 4;
-    ctx.shadowColor = 'var(--mega-red)';
+    ctx.shadowColor = '#ff2060';
     ctx.shadowBlur = 10;
     ctx.beginPath();
     ctx.arc(28, -28, 26, -Math.PI*0.4, Math.PI*0.4);
@@ -954,7 +951,7 @@ function drawPlayer() {
     ctx.save();
     ctx.strokeStyle = '#ffffff';
     ctx.lineWidth = 2;
-    ctx.shadowColor = 'var(--mega-cyan)';
+    ctx.shadowColor = '#00e0ff';
     ctx.shadowBlur = 8;
     for (let i = 0; i < 3; i++) {
       const rx = (Math.random() - 0.5) * 60;
@@ -1043,7 +1040,7 @@ function drawEnemy() {
   let eWidth = 20;
   let eHeight = 45;
 
-  if (enemySprite.complete && enemySprite.naturalWidth !== 0) {
+  if (enemySpriteCanvas) {
     ctx.save();
     if (e.isBoss) {
       headTopY = e.type === 'archfiend' ? -150 : -95;
@@ -1051,12 +1048,12 @@ function drawEnemy() {
       eHeight = -headTopY;
       
       // ボスは巨大サイズで描画
-      ctx.drawImage(enemySprite, -eWidth - 20, -eHeight - 20, (eWidth + 20) * 2, (eHeight + 20));
+      ctx.drawImage(enemySpriteCanvas, -eWidth - 20, -eHeight - 20, (eWidth + 20) * 2, (eHeight + 20));
     } else {
       eWidth = 22;
       eHeight = 25;
       // 雑魚は通常サイズ
-      ctx.drawImage(enemySprite, -25, -50, 50, 50);
+      ctx.drawImage(enemySpriteCanvas, -25, -50, 50, 50);
     }
 
     // 被弾時の赤・白フラッシュ効果
@@ -1074,7 +1071,7 @@ function drawEnemy() {
     // --- G. フォールバック・ベクター敵ロボット描画 ---
     if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
       ctx.fillStyle = '#fff';
-      ctx.strokeStyle = 'var(--mega-red)';
+      ctx.strokeStyle = '#ff2060';
     }
 
     if (e.isBoss) {
@@ -1097,7 +1094,7 @@ function drawEnemy() {
         ctx.arc(0, -85, 14, Math.PI*1.1, Math.PI*1.9);
         ctx.stroke();
 
-        ctx.fillStyle = 'var(--mega-yellow)';
+        ctx.fillStyle = '#ffe000';
         ctx.fillRect(-6, -65, 4, 6);
         ctx.fillRect(2, -65, 4, 6);
         
@@ -1110,7 +1107,7 @@ function drawEnemy() {
         ctx.fillRect(-30, -38, 60, 38);
         ctx.fillRect(-14, -62, 28, 24);
 
-        ctx.strokeStyle = 'var(--mega-yellow)';
+        ctx.strokeStyle = '#ffe000';
         ctx.lineWidth = 4;
         ctx.strokeRect(-8, -54, 16, 8);
 
@@ -1130,7 +1127,7 @@ function drawEnemy() {
         ctx.lineWidth = 4;
         ctx.fillRect(-30, -70, 60, 70);
         
-        ctx.fillStyle = 'var(--mega-yellow)';
+        ctx.fillStyle = '#ffe000';
         ctx.fillRect(-15, -55, 6, 6);
         ctx.fillRect(9, -55, 6, 6);
 
@@ -1149,7 +1146,7 @@ function drawEnemy() {
         ctx.fillRect(-22, -50, 44, 50);
         ctx.fillRect(-14, -78, 28, 28);
 
-        ctx.strokeStyle = 'var(--mega-yellow)';
+        ctx.strokeStyle = '#ffe000';
         ctx.lineWidth = 6;
         ctx.beginPath();
         ctx.moveTo(-20, -84);
@@ -1169,7 +1166,7 @@ function drawEnemy() {
         ctx.fillRect(-34, -85, 24, 20);
         ctx.fillRect(10, -85, 24, 20);
 
-        ctx.fillStyle = 'var(--mega-red)';
+        ctx.fillStyle = '#ff2060';
         ctx.fillRect(-26, -78, 8, 8);
         ctx.fillRect(18, -78, 8, 8);
 
@@ -1183,7 +1180,7 @@ function drawEnemy() {
       eWidth = 22;
       eHeight = 25;
       if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-        ctx.fillStyle = 'var(--mega-yellow)';
+        ctx.fillStyle = '#ffe000';
         ctx.strokeStyle = '#000';
       }
       ctx.lineWidth = 3;
@@ -1193,7 +1190,7 @@ function drawEnemy() {
       ctx.fillRect(-4, -18, 8, 12);
       ctx.fillRect(-10, -12, 20, 4);
 
-      ctx.fillStyle = 'var(--neon-green)';
+      ctx.fillStyle = '#00ff66';
       ctx.fillRect(-18, -4, 12, 5);
       ctx.fillRect(6, -4, 12, 5);
     }
@@ -1224,16 +1221,16 @@ function drawEnemy() {
   const barY = headTopY - 15;
 
   ctx.fillStyle = '#000000';
-  ctx.strokeStyle = isHurt ? 'var(--mega-yellow)' : '#ffffff';
+  ctx.strokeStyle = isHurt ? '#ffe000' : '#ffffff';
   ctx.lineWidth = 2;
   ctx.fillRect(-barWidth/2, barY, barWidth, barHeight);
   ctx.strokeRect(-barWidth/2, barY, barWidth, barHeight);
 
-  ctx.fillStyle = 'var(--mega-red)';
+  ctx.fillStyle = '#ff2060';
   ctx.fillRect(-barWidth/2 + 1, barY + 1, (barWidth - 2) * hpPct, barHeight - 2);
 
   ctx.fillStyle = '#ffffff';
-  ctx.font = 'bold 8px var(--font-pixel)';
+  ctx.font = 'bold 8px Courier New, monospace';
   ctx.textAlign = 'center';
   ctx.shadowColor = '#000';
   ctx.shadowBlur = 3;
@@ -1241,8 +1238,8 @@ function drawEnemy() {
   ctx.shadowBlur = 0;
 
   if (e.isBoss && e.isChargingAttack) {
-    ctx.fillStyle = 'var(--mega-yellow)';
-    ctx.font = 'bold 10px var(--font-pixel)';
+    ctx.fillStyle = '#ffe000';
+    ctx.font = 'bold 10px Courier New, monospace';
     ctx.textAlign = 'center';
     
     let guide = "D D A S / S A S A!";
@@ -1279,7 +1276,7 @@ function updateAndDrawParticles() {
     if (p.isText) {
       ctx.globalAlpha = 1 - pct;
       ctx.fillStyle = p.color;
-      ctx.font = p.font || 'bold 16px var(--font-mono)';
+      ctx.font = p.font || 'bold 16px monospace';
       ctx.textAlign = 'center';
       ctx.shadowColor = p.color;
       ctx.shadowBlur = 8;
@@ -1327,7 +1324,7 @@ function spawnTextParticle(x, y, text, color, isCritical = false) {
     color,
     text,
     isText: true,
-    font: isCritical ? 'bold 18px var(--font-pixel)' : 'bold 16px var(--font-pixel)',
+    font: isCritical ? 'bold 18px Courier New, monospace' : 'bold 16px Courier New, monospace',
     life: 1000,
     created: Date.now()
   });
@@ -1345,7 +1342,7 @@ function spawnHitParticles(x, y, color) {
   state.particles.push({
     x, y, vx: 0, vy: 0,
     size: 30,
-    color: 'var(--mega-cyan)',
+    color: '#00e0ff',
     isRing: true,
     life: 600,
     created: Date.now()
@@ -1385,12 +1382,134 @@ function spawnPlayerBullet(startX, startY, color, size, isUltimate) {
 function gameLoop() {
   if (!state.gameActive) return;
 
+  // 1. ヒットストップの適用 (動きの更新を一時停止させるが、描画は維持)
+  let skipUpdate = false;
+  if (state.hitStopFrames > 0) {
+    state.hitStopFrames--;
+    skipUpdate = true;
+  }
+
+  ctx.save();
+
+  // 2. 画面揺れ (Screen Shake) の適用
+  if (state.shakeTime > 0) {
+    const dx = (Math.random() - 0.5) * state.shakeIntensity;
+    const dy = (Math.random() - 0.5) * state.shakeIntensity;
+    ctx.translate(dx, dy);
+    state.shakeTime = Math.max(0, state.shakeTime - 16.67);
+  }
+
+  if (ctx) {
+    ctx.imageSmoothingEnabled = false;
+    ctx.mozImageSmoothingEnabled = false;
+    ctx.webkitImageSmoothingEnabled = false;
+    ctx.msImageSmoothingEnabled = false;
+  }
+
+  // 3. 各種描画
   drawBackground();
+  
+  // ボス出現時の「WARNING!!」ホログラム警告演出
+  if (state.bossWarningTime > 0) {
+    drawBossWarning();
+    state.bossWarningTime = Math.max(0, state.bossWarningTime - 16.67);
+  }
+
   drawPlayer();
   drawEnemy();
-  updateAndDrawParticles();
+
+  // ヒットストップ中はパーティクルの移動更新を止め、描画のみ行う
+  if (skipUpdate) {
+    drawParticlesStatic();
+  } else {
+    updateAndDrawParticles();
+  }
+
+  ctx.restore();
 
   requestAnimationFrame(gameLoop);
+}
+
+/**
+ * ボス戦開始時の「WARNING!!」という巨大なサイバー警告ホログラムを描画します。
+ */
+function drawBossWarning() {
+  if (!ctx || !canvas) return;
+  const width = canvas.width;
+  
+  // 赤い半透明帯の描画
+  ctx.save();
+  ctx.fillStyle = 'rgba(255, 32, 96, 0.35)';
+  ctx.fillRect(0, 100, width, 60);
+  
+  // 上下の黄色ネオン境界線
+  ctx.strokeStyle = '#ffe000';
+  ctx.lineWidth = 3;
+  ctx.beginPath();
+  ctx.moveTo(0, 100);
+  ctx.lineTo(width, 100);
+  ctx.moveTo(0, 160);
+  ctx.lineTo(width, 160);
+  ctx.stroke();
+
+  // 文字の点滅
+  if (Math.floor(Date.now() / 150) % 2 === 0) {
+    ctx.fillStyle = '#ff2060';
+    ctx.shadowColor = '#ff2060';
+    ctx.shadowBlur = 15;
+    ctx.font = 'bold 22px Courier New, monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText('! WARNING: SECURE FORCE DETECTED !', width / 2, 138);
+  }
+  ctx.restore();
+}
+
+/**
+ * ヒットストップ中にパーティクルの動きを静止したまま描画します。
+ */
+function drawParticlesStatic() {
+  if (!ctx) return;
+  const now = Date.now();
+  for (let i = 0; i < state.particles.length; i++) {
+    const p = state.particles[i];
+    const age = now - p.created;
+    const pct = Math.min(1, age / p.life);
+
+    ctx.save();
+    if (p.isText) {
+      ctx.globalAlpha = 1 - pct;
+      ctx.fillStyle = p.color;
+      ctx.font = p.font || 'bold 16px Courier New, monospace';
+      ctx.textAlign = 'center';
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 8;
+      ctx.fillText(p.text, p.x, p.y);
+    } else if (p.isBullet) {
+      ctx.shadowColor = p.color;
+      ctx.shadowBlur = 10;
+      ctx.fillStyle = p.color;
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.fillRect(-5, 2, 4, 4);
+      ctx.fillRect(0, -6, 2, 10);
+      ctx.fillRect(1, -6, 6, 2);
+      ctx.restore();
+    } else if (p.isRing) {
+      ctx.globalAlpha = 1 - pct;
+      ctx.strokeStyle = p.color;
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * pct * 4, 0, Math.PI*2);
+      ctx.stroke();
+    } else {
+      ctx.globalAlpha = 1 - pct;
+      ctx.fillStyle = p.color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (1 - pct), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+  }
 }
 
 // ==========================================
@@ -1502,7 +1621,7 @@ function handleMeasureEnd() {
           if (!state.fever) {
             state.fever = true;
             document.getElementById('fever-banner').classList.remove('hidden');
-            spawnTextParticle(400, 150, "OVER DRIVE!!", 'var(--mega-yellow)', true);
+            spawnTextParticle(400, 150, "OVER DRIVE!!", '#ffe000', true);
           }
         }
 
@@ -1599,13 +1718,13 @@ function triggerDrumInput(type, padId) {
   }
 
   let timingText = "MISS";
-  let color = 'var(--mega-red)';
+  let color = '#ff2060';
   if (diff <= state.perfectWindow) {
     timingText = "PERFECT";
-    color = 'var(--mega-yellow)';
+    color = '#ffe000';
   } else if (diff <= state.goodWindow) {
     timingText = "GOOD";
-    color = 'var(--neon-green)';
+    color = '#00ff66';
   }
   
   const inputIndex = state.currentInputs.length - 1;
@@ -1655,7 +1774,7 @@ function executeActionTurn(actionKey) {
         state.particles.push({
           x: state.playerX - 20, y: 295,
           vx: -3 - Math.random()*3, vy: -1 - Math.random()*2,
-          size: 2 + Math.random()*3, color: 'var(--mega-cyan)',
+          size: 2 + Math.random()*3, color: '#00e0ff',
           life: 400, created: Date.now()
         });
       }
@@ -1693,7 +1812,7 @@ function executeActionTurn(actionKey) {
   else if (actionKey === 'attack') {
     state.combatLog = "バスター射撃準備。";
     
-    const bColor = state.fever ? 'var(--mega-yellow)' : (wp.rarity === 'legendary' ? '#ff3fde' : 'var(--mega-cyan)');
+    const bColor = state.fever ? '#ffe000' : (wp.rarity === 'legendary' ? '#ff3fde' : '#00e0ff');
     const bSize = state.isCharged ? 14 : 6;
     setTimeout(() => {
       if (state.gameActive && state.phase === 'combat') {
@@ -1707,7 +1826,7 @@ function executeActionTurn(actionKey) {
       const distance = Math.abs(state.enemyX - state.playerX);
       if (distance > wp.range) {
         state.combatLog = `射程外！ (距離:${distance} > 射程:${wp.range}) 前進 (A A A S) せよ！`;
-        spawnTextParticle(state.enemyX, 240, "RANGE OUT!", 'var(--mega-gray)', false);
+        spawnTextParticle(state.enemyX, 240, "RANGE OUT!", '#808898', false);
         state.isCharged = false;
         return;
       }
@@ -1728,8 +1847,13 @@ function executeActionTurn(actionKey) {
       state.enemy.hp = Math.max(0, state.enemy.hp - finalDmg);
       state.enemyHurtTime = Date.now();
 
-      spawnHitParticles(state.enemyX, 260, isCrit ? 'var(--mega-yellow)' : 'var(--mega-cyan)');
-      spawnTextParticle(state.enemyX, 180, `${finalDmg}${isCrit ? ' CRITICAL!' : ''}`, isCrit ? 'var(--mega-yellow)' : '#fff', isCrit);
+      // ヒット演出 (画面揺れ & ヒットストップ)
+      state.shakeTime = isCrit ? 400 : 250;
+      state.shakeIntensity = isCrit ? 12 : 6;
+      state.hitStopFrames = isCrit ? 8 : 4;
+
+      spawnHitParticles(state.enemyX, 260, isCrit ? '#ffe000' : '#00e0ff');
+      spawnTextParticle(state.enemyX, 180, `${finalDmg}${isCrit ? ' CRITICAL!' : ''}`, isCrit ? '#ffe000' : '#fff', isCrit);
 
       if (state.enemy.hp <= 0) {
         handleEnemyDefeat();
@@ -1752,14 +1876,19 @@ function executeActionTurn(actionKey) {
       const dmg = Math.floor((p.baseAtk + (wp.atk || 0)) * 2.8);
       state.enemy.hp = Math.max(0, state.enemy.hp - dmg);
       state.enemyHurtTime = Date.now();
+
+      // 全体爆破による大地震
+      state.shakeTime = 600;
+      state.shakeIntensity = 18;
+      state.hitStopFrames = 12;
       
-      spawnHitParticles(state.enemyX, 260, 'var(--mega-yellow)');
-      spawnTextParticle(state.enemyX, 150, `${dmg} (BURST)`, 'var(--mega-yellow)', true);
+      spawnHitParticles(state.enemyX, 260, '#ffe000');
+      spawnTextParticle(state.enemyX, 150, `${dmg} (BURST)`, '#ffe000', true);
 
       const heal = Math.floor(p.maxHp * 0.35);
       p.hp = Math.min(p.maxHp, p.hp + heal);
-      spawnHitParticles(state.playerX, 250, 'var(--neon-green)');
-      spawnTextParticle(state.playerX, 200, `+${heal} LIFE`, 'var(--neon-green)');
+      spawnHitParticles(state.playerX, 250, '#00ff66');
+      spawnTextParticle(state.playerX, 200, `+${heal} LIFE`, '#00ff66');
 
       if (state.enemy.hp <= 0) {
         handleEnemyDefeat();
@@ -1801,7 +1930,7 @@ function executeActionTurn(actionKey) {
     }
 
     if (avoidSuccess) {
-      spawnTextParticle(state.playerX, 180, "DODGE!", 'var(--mega-cyan)', true);
+      spawnTextParticle(state.playerX, 180, "DODGE!", '#00e0ff', true);
       updateUI();
       return;
     }
@@ -1810,7 +1939,7 @@ function executeActionTurn(actionKey) {
     if (isPlayerDefending) {
       enemyDmg = Math.floor(enemyDmg * 0.15);
       state.combatLog = `${state.enemy.name}の直撃をシールドで最小限に防いだ！`;
-      spawnTextParticle(state.playerX, 180, "BLOCK!", 'var(--mega-cyan)');
+      spawnTextParticle(state.playerX, 180, "BLOCK!", '#00e0ff');
     } else {
       state.combatLog = `${state.enemy.name}の直撃を受けました！`;
       if (attackType === 'high') state.combatLog += " (上段攻撃には DUCK: D S D S が有効です)";
@@ -1821,8 +1950,13 @@ function executeActionTurn(actionKey) {
     p.hp = Math.max(0, p.hp - finalEnemyDmg);
     state.playerHurtTime = Date.now();
 
-    spawnHitParticles(state.playerX, 250, 'var(--mega-red)');
-    spawnTextParticle(state.playerX, 210, `-${finalEnemyDmg}`, 'var(--mega-red)');
+    // プレイヤー被弾時の画面揺れ & ヒットストップ
+    state.shakeTime = isPlayerDefending ? 200 : 450;
+    state.shakeIntensity = isPlayerDefending ? 4 : 14;
+    state.hitStopFrames = isPlayerDefending ? 2 : 8;
+
+    spawnHitParticles(state.playerX, 250, '#ff2060');
+    spawnTextParticle(state.playerX, 210, `-${finalEnemyDmg}`, '#ff2060');
 
     if (p.hp <= 0) {
       handlePlayerDefeat();
@@ -1859,6 +1993,9 @@ function spawnEnemy() {
       pendingAttackType: 'sweep'
     };
     state.combatLog = `[ALERT] ボスロボ『${state.enemy.name}』を検知！`;
+    state.bossWarningTime = 2500;
+    state.shakeTime = 1200;
+    state.shakeIntensity = 5;
   } else {
     const names = ["メットール", "バットンロボ", "ジョー防衛型", "スクリュー敵"];
     const name = names[Math.floor(Math.random() * names.length)];
@@ -1970,7 +2107,7 @@ function checkLevelUp() {
 
   if (leveledUp) {
     state.combatLog = `システムアップデート！ Lv. ${p.level} 到達。ネジ:${p.gold}`;
-    spawnTextParticle(state.playerX, 100, "SYSTEM UPGRADE!", 'var(--mega-yellow)', true);
+    spawnTextParticle(state.playerX, 100, "SYSTEM UPGRADE!", '#ffe000', true);
     checkEvolution();
   }
 }
@@ -1990,7 +2127,7 @@ function checkEvolution() {
     p.evoIndex = newEvoIndex;
     const evo = EVO_STEPS[p.evoIndex];
     state.combatLog += ` アーマー換装：『${evo.name}』。`;
-    spawnTextParticle(state.playerX, 70, `ARMOR ATTACHED: ${evo.name}`, 'var(--mega-red)', true);
+    spawnTextParticle(state.playerX, 70, `ARMOR ATTACHED: ${evo.name}`, '#ff2060', true);
     
     if (p.evoIndex >= 1 && !p.unlockedCommands.includes('defend')) p.unlockedCommands.push('defend');
     if (p.evoIndex >= 2 && !p.unlockedCommands.includes('charge')) p.unlockedCommands.push('charge');
@@ -2221,9 +2358,9 @@ function renderVerticalHpBar(hp, maxHp) {
       dot.style.background = '#000000';
     } else {
       if (hp / maxHp < 0.25) {
-        dot.style.background = 'var(--mega-red)';
+        dot.style.background = '#ff2060';
       } else {
-        dot.style.background = 'var(--mega-yellow)';
+        dot.style.background = '#ffe000';
       }
     }
     hpBarContainer.appendChild(dot);
