@@ -2,17 +2,86 @@
 // ROCK BEAT - game.js (Mega Man Style Rhythm Action Engine)
 // ----------------------------------------------------
 
-// ==========================================
-// 1. 8-bit サウンドシステム (Web Audio API)
-// ==========================================
+// Canvas2DコンテキストがCSS変数を解釈できるようにプロトタイプを拡張します
+(function() {
+  if (typeof window === 'undefined' || !window.CanvasRenderingContext2D) return;
+
+  const getCssColor = (varStr) => {
+    if (typeof varStr !== 'string' || !varStr.startsWith('var(')) return varStr;
+    const name = varStr.substring(4, varStr.length - 1).trim();
+    const val = window.getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+    if (val) return val;
+    // CSS変数のロード前、あるいはフォールバック用カラーマップ
+    const fallback = {
+      '--mega-blue': '#0058d8',
+      '--mega-cyan': '#00e0ff',
+      '--mega-yellow': '#ffe000',
+      '--mega-red': '#ff2060',
+      '--mega-gray': '#808898',
+      '--neon-green': '#00ff66'
+    };
+    return fallback[name] || '#ffffff';
+  };
+
+  const proto = window.CanvasRenderingContext2D.prototype;
+  
+  const originalFillStyleDescriptor = Object.getOwnPropertyDescriptor(proto, 'fillStyle');
+  Object.defineProperty(proto, 'fillStyle', {
+    get: function() {
+      return originalFillStyleDescriptor.get.call(this);
+    },
+    set: function(val) {
+      originalFillStyleDescriptor.set.call(this, getCssColor(val));
+    }
+  });
+
+  const originalStrokeStyleDescriptor = Object.getOwnPropertyDescriptor(proto, 'strokeStyle');
+  Object.defineProperty(proto, 'strokeStyle', {
+    get: function() {
+      return originalStrokeStyleDescriptor.get.call(this);
+    },
+    set: function(val) {
+      originalStrokeStyleDescriptor.set.call(this, getCssColor(val));
+    }
+  });
+
+  const originalShadowColorDescriptor = Object.getOwnPropertyDescriptor(proto, 'shadowColor');
+  Object.defineProperty(proto, 'shadowColor', {
+    get: function() {
+      return originalShadowColorDescriptor.get.call(this);
+    },
+    set: function(val) {
+      originalShadowColorDescriptor.set.call(this, getCssColor(val));
+    }
+  });
+})();
+
+// スプライトアセットのロード
+const playerSprite = new Image();
+playerSprite.src = 'player_sprite.jpg';
+const enemySprite = new Image();
+enemySprite.src = 'enemy_sprite.jpg';
+
+/**
+ * 8-bit およびモダンシンセサイザーサウンドの生成・再生を管理するクラス。
+ * Web Audio API を使用してオシレータ波形とフィルターをリアルタイム合成します。
+ */
 class SoundManager {
   constructor() {
+    /** @type {AudioContext|null} Web Audio APIのコンテキスト */
     this.ctx = null;
+    /** @type {GainNode|null} マスター音量制御ノード */
     this.masterGain = null;
+    /** @type {number} BGMの基準音量倍率 */
     this.bgmVolume = 0.12;
+    /** @type {number} 効果音(SFX)の基準音量倍率 */
     this.sfxVolume = 0.45;
   }
 
+  /**
+   * オーディオコンテキストを初期化します。
+   * ブラウザの自動再生防止ポリシーを回避するため、ユーザー操作（スタートクリック）時に呼び出します。
+   */
   init() {
     if (this.ctx) return;
     this.ctx = new (window.AudioContext || window.webkitAudioContext)();
@@ -21,13 +90,16 @@ class SoundManager {
     this.masterGain.gain.setValueAtTime(0.8, this.ctx.currentTime);
   }
 
-  // 8-bit SFX 生成
+  /**
+   * ドラムパッド入力（キーボード演奏）に対応する8-bit効果音をリアルタイム合成して再生します。
+   * @param {'rock'|'shot'|'bari'|'sync'} type 音色の種類
+   */
   playDrum(type) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
 
     switch (type) {
-      case 'rock': { // ROCK / pata / [A]: パルス駆動音
+      case 'rock': { // pata / [A]: 低周波の短波によるノイズ風パルス音
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = 'square';
@@ -44,7 +116,7 @@ class SoundManager {
         osc.stop(now + 0.13);
         break;
       }
-      case 'shot': { // SHOT / pon / [S]: バスター発射音
+      case 'shot': { // pon / [S]: 高周波の矩形波スイープによるロックマン風バスター弾発射音
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = 'square';
@@ -61,7 +133,7 @@ class SoundManager {
         osc.stop(now + 0.09);
         break;
       }
-      case 'bari': { // BARI / chaka / [D]: バリアノイズ
+      case 'bari': { // chaka / [D]: 特殊ノイズバッファを用いた電磁バリア展開音
         const bufferSize = this.ctx.sampleRate * 0.15;
         const buffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
         const data = buffer.getChannelData(0);
@@ -88,7 +160,7 @@ class SoundManager {
         noise.stop(now + 0.16);
         break;
       }
-      case 'sync': { // SYNC / don / [F]: チャージ音
+      case 'sync': { // don / [F]: ピッチ上昇型矩形波によるチャージ・同調エネルギー音
         const osc = this.ctx.createOscillator();
         const gain = this.ctx.createGain();
         osc.type = 'square';
@@ -108,7 +180,10 @@ class SoundManager {
     }
   }
 
-  // 8-bit メトロノーム音
+  /**
+   * メトロノームクリック音（テンポガイド）を再生します。
+   * @param {boolean} isFirstBeat 小節の最初の拍(1拍目)の場合は高音で強調します
+   */
   playMetronome(isFirstBeat) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
@@ -127,7 +202,11 @@ class SoundManager {
     osc.stop(now + 0.08);
   }
 
-  // アクション中ロボットメロディ
+  /**
+   * アクション実行フェーズ(レスポンス側)にて、ロボットが歌うように再生するFC調メロディ。
+   * @param {'pata'|'pon'|'chaka'|'don'|'sync'} syllable 再生する音素シラブル
+   * @param {number} index 小節内での拍インデックス (0〜3)
+   */
   singRobotAction(syllable, index) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
@@ -154,52 +233,143 @@ class SoundManager {
     osc.stop(now + 0.22);
   }
 
-  // BGM tick: 8-bit PSG調ループ
+  /**
+   * メトロノームビートと同調し、裏で走るステージBGMをモダンなシンセサウンドで合成再生します。
+   * Synthwave / Cyberpunk風の太いベース、コードパッド、キックをブレンドします。
+   * @param {number} beatIndex 小節内の拍インデックス (0〜3)
+   * @param {number} stepIndex ゲーム開始時からの累積拍カウント
+   * @param {boolean} isFever フィーバー（オーバードライブ）状態か否か
+   */
   playBgmTick(beatIndex, stepIndex, isFever) {
     if (!this.ctx) return;
     const now = this.ctx.currentTime;
-    
-    const chords = [
-      [220, 261, 329], // Am
-      [196, 246, 293], // G
-      [174, 220, 261], // F
-      [164, 207, 246]  // E
+
+    // モダンで浮遊感のあるネオ・シンセウェーブコード進行 (Am9 -> Fmaj9 -> Cmaj9 -> G6/9)
+    const prog = [
+      {
+        root: 110.00, // A2 (ベース音は55Hz)
+        pad: [220.00, 261.63, 329.63, 392.00] // Am7 (A3, C4, E4, G4)
+      },
+      {
+        root: 87.31,  // F2
+        pad: [174.61, 220.00, 261.63, 329.63] // Fmaj7 (F3, A3, C4, E4)
+      },
+      {
+        root: 65.41,  // C2
+        pad: [130.81, 164.81, 196.00, 246.94] // Cmaj7 (C3, E3, G3, B3)
+      },
+      {
+        root: 98.00,  // G2
+        pad: [196.00, 246.94, 293.66, 329.63] // G6 (G3, B3, D4, E4)
+      }
     ];
 
-    const chordIndex = Math.floor(stepIndex / 8) % chords.length;
-    const currentChord = chords[chordIndex];
-    
-    // ベース音 (三角波)
+    const chordIdx = Math.floor(stepIndex / 8) % prog.length;
+    const chord = prog[chordIdx];
+
+    // --- 1. ディープ・シンセベース (Synth Bass) ---
     const baseOsc = this.ctx.createOscillator();
     const baseGain = this.ctx.createGain();
-    baseOsc.type = 'triangle';
-    baseOsc.connect(baseGain);
-    baseGain.connect(this.masterGain);
-    
-    const rootNote = currentChord[0] / 2;
-    baseOsc.frequency.setValueAtTime(rootNote, now);
-    baseGain.gain.setValueAtTime(this.bgmVolume * (isFever ? 0.9 : 0.6), now);
-    baseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
-    baseOsc.start(now);
-    baseOsc.stop(now + 0.4);
+    const baseFilter = this.ctx.createBiquadFilter();
 
-    // メロディ (矩形波)
-    if (beatIndex === 1 || beatIndex === 3) {
-      const melodyOsc = this.ctx.createOscillator();
-      const melodyGain = this.ctx.createGain();
-      melodyOsc.type = 'square';
-      melodyOsc.connect(melodyGain);
-      melodyGain.connect(this.masterGain);
+    baseOsc.type = 'sawtooth';
+    baseFilter.type = 'lowpass';
+    
+    const baseFreq = chord.root / 2;
+    baseOsc.frequency.setValueAtTime(baseFreq, now);
+    
+    baseFilter.frequency.setValueAtTime(250, now);
+    baseFilter.frequency.exponentialRampToValueAtTime(75, now + 0.35);
+
+    baseGain.gain.setValueAtTime(this.bgmVolume * (isFever ? 1.1 : 0.7), now);
+    baseGain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+
+    baseOsc.connect(baseFilter);
+    baseFilter.connect(baseGain);
+    baseGain.connect(this.masterGain);
+
+    baseOsc.start(now);
+    baseOsc.stop(now + 0.38);
+
+    if (isFever) {
+      const subOsc = this.ctx.createOscillator();
+      const subGain = this.ctx.createGain();
+      subOsc.type = 'triangle';
+      subOsc.frequency.setValueAtTime(baseFreq * 2, now);
+      subGain.gain.setValueAtTime(this.bgmVolume * 0.3, now);
+      subGain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+      subOsc.connect(subGain);
+      subGain.connect(this.masterGain);
+      subOsc.start(now);
+      subOsc.stop(now + 0.38);
+    }
+
+    // --- 2. アンビエント・コードシンセパッド (Synth Pad) ---
+    if (beatIndex === 0 || beatIndex === 2) {
+      chord.pad.forEach((freq, idx) => {
+        const padOsc = this.ctx.createOscillator();
+        const padGain = this.ctx.createGain();
+        const padFilter = this.ctx.createBiquadFilter();
+
+        padOsc.type = idx % 2 === 0 ? 'triangle' : 'sawtooth';
+        padOsc.frequency.setValueAtTime(freq, now);
+
+        padFilter.type = 'lowpass';
+        padFilter.frequency.setValueAtTime(1000, now);
+        padFilter.frequency.exponentialRampToValueAtTime(250, now + 0.9);
+
+        padGain.gain.setValueAtTime(0, now);
+        padGain.gain.linearRampToValueAtTime(this.bgmVolume * 0.22, now + 0.1);
+        padGain.gain.exponentialRampToValueAtTime(0.005, now + 0.95);
+
+        padOsc.connect(padFilter);
+        padFilter.connect(padGain);
+        padGain.connect(this.masterGain);
+
+        padOsc.start(now);
+        padOsc.stop(now + 1.0);
+      });
+    }
+
+    // --- 3. モダン・ディープキック (Modern Deep Kick) ---
+    const kickOsc = this.ctx.createOscillator();
+    const kickGain = this.ctx.createGain();
+    kickOsc.type = 'sine';
+    kickOsc.frequency.setValueAtTime(150, now);
+    kickOsc.frequency.exponentialRampToValueAtTime(40, now + 0.1);
+
+    kickGain.gain.setValueAtTime(this.bgmVolume * (isFever ? 1.3 : 0.95), now);
+    kickGain.gain.exponentialRampToValueAtTime(0.01, now + 0.12);
+
+    kickOsc.connect(kickGain);
+    kickGain.connect(this.masterGain);
+    kickOsc.start(now);
+    kickOsc.stop(now + 0.13);
+
+    // フィーバー時のハイハット裏打ち
+    if (isFever && (beatIndex === 1 || beatIndex === 3)) {
+      const hatBuffer = this.ctx.createBuffer(1, this.ctx.sampleRate * 0.03, this.ctx.sampleRate);
+      const hatData = hatBuffer.getChannelData(0);
+      for (let i = 0; i < hatData.length; i++) {
+        hatData[i] = Math.random() * 2 - 1;
+      }
+      const hatSource = this.ctx.createBufferSource();
+      hatSource.buffer = hatBuffer;
+
+      const hatFilter = this.ctx.createBiquadFilter();
+      hatFilter.type = 'highpass';
+      hatFilter.frequency.setValueAtTime(8000, now);
+
+      const hatGain = this.ctx.createGain();
+      hatGain.gain.setValueAtTime(this.bgmVolume * 0.15, now);
+      hatGain.gain.exponentialRampToValueAtTime(0.005, now + 0.03);
+
+      hatSource.connect(hatFilter);
+      hatFilter.connect(hatGain);
+      hatGain.connect(this.masterGain);
       
-      const octave = isFever ? 2 : 1;
-      const note = currentChord[beatIndex === 1 ? 1 : 2] * octave;
-      melodyOsc.frequency.setValueAtTime(note, now);
-      
-      melodyGain.gain.setValueAtTime(this.bgmVolume * 0.25, now);
-      melodyGain.gain.exponentialRampToValueAtTime(0.01, now + 0.25);
-      
-      melodyOsc.start(now);
-      melodyOsc.stop(now + 0.28);
+      hatSource.start(now);
+      hatSource.stop(now + 0.04);
     }
   }
 }
@@ -231,10 +401,11 @@ const WEAPONS_DB = {
   excalibur: { name: "ゼットセイバー", type: "sword", atk: 110, hp: 130, def: 15, crit: 30, range: 130, rarity: "legendary", icon: "⚔️", desc: "純光エネルギーの刃。射程:130" }
 };
 
-// ==========================================
-// 3. ゲームステート
-// ==========================================
+/**
+ * ゲームエンジン全体のグローバルな動的ステート。
+ */
 const state = {
+  /** プレイヤーキャラクター（ロックマン）の情報 */
   player: {
     level: 1,
     xp: 0,
@@ -244,62 +415,79 @@ const state = {
     baseAtk: 15,
     baseDef: 5,
     crit: 5,
-    sp: 0,
-    gold: 0,
+    sp: 0, // レベルアップ時にもらえる強化ポイント
+    gold: 0, // ネジ
     bossKills: 0,
     
     equippedId: "wood_spear",
     inventory: ["wood_spear"],
-    chests: [],
+    chests: [], // 取得したが未鑑定のカプセル格納エリア
     
-    evoIndex: 0,
-    unlockedCommands: ['walk', 'retreat', 'attack', 'jump', 'duck']
+    evoIndex: 0, // 現在のアーマー形態インデックス (EVO_STEPS)
+    unlockedCommands: ['walk', 'attack', 'retreat', 'jump', 'duck']
   },
 
+  /** @type {Object|null} 現在対峙している敵オブジェクト */
   enemy: null,
   
   stage: 1,
   wave: 1,
   maxWaves: 5,
-  distanceToBoss: 4,
+  distanceToBoss: 4, // 0 になるとボスが出現
   gameActive: false,
   combatLog: "",
 
   // 進行フェーズ
-  phase: 'move',
-  moveProgress: 0,
-  moveRequired: 3,
+  phase: 'move', // 'move' (道中移動) または 'combat' (対敵戦闘)
+  moveProgress: 0, // 移動の進捗カウント
+  moveRequired: 3, // 次のセキュリティ遭遇までに必要なDASH成功回数
 
   bpm: 120,
-  beatInterval: 500,
-  lastBeatTime: 0,
-  beatCount: 0,
-  stepCount: 0,
-  turn: 'input',
+  beatInterval: 500, // 1拍のミリ秒値
+  lastBeatTime: 0, // 前回のメトロノーム発火ミリ秒刻み値
+  beatCount: 0, // 拍カウント (0〜3 of 4拍ループ)
+  stepCount: 0, // ゲーム開始時からの総ステップ数
+  turn: 'input', // 'input' (コール・プレイヤー入力ターン) または 'action' (レスポンス・行動評価ターン)
   
+  /** @type {Array.<{name: string, diff: number}>} 入力ターン内で打鍵された4拍分のリズムバッファ */
   currentInputs: [],
-  hasInputThisBeat: false,
-  perfectWindow: 90,
-  goodWindow: 170,
+  hasInputThisBeat: true, // 1拍内に複数連打されるのを防止するフラグ
+
+  // タイミング判定ウィンドウ (ミリ秒値)
+  perfectWindow: 125, // ジャスト判定 (この範囲内なら PERFECT)
+  goodWindow: 205,    // 許容判定 (この範囲内なら GOOD)
   
   combo: 0,
-  fever: false,
-  feverMeter: 0,
-  isCharged: false,
+  fever: false, // フィーバー(オーバードライブ)モード突入フラグ
+  feverMeter: 0, // フィーバー突入用メーター(最大100)
+  isCharged: false, // CHARGE完了後の次のバスターが強化されるフラグ
 
+  /** @type {Array.<Object>} 画面上に舞う各種描画パーティクルバッファ */
   particles: [],
-  playerX: 200,
-  enemyX: 600,
-  playerActionAnim: null,
-  enemyActionAnim: null,
-  enemyHurtTime: 0
+  playerX: 200, // プレイヤーの座標
+  enemyX: 600, // 敵の座標
+  playerActionAnim: null, // プレイヤーの行動アニメ状態
+  enemyActionAnim: null, // 敵の行動アニメ状態
+  enemyHurtTime: 0 // 敵被弾時の赤白フラッシュタイマー用
 };
 
-// リズムパターンとキー配列の対応
+/**
+ * @typedef {Object} CommandPattern
+ * @property {string} name 表示日本語名
+ * @property {Array.<'pata'|'pon'|'chaka'|'don'>} pattern 合致に必要な4拍のリズム配列
+ * @property {string} keys 対応するキーボード文字解説
+ * @property {number} [minEvo] 解放に必要なアーマー進化段階 (EVO_STEPSのインデックス)
+ * @property {boolean} [feverOnly] フィーバー中のみ使用可能か否か
+ */
+
+/**
+ * 入力ターンの最後に合致判定を行うための全プログラム定義。
+ * @type {Object.<string, CommandPattern>}
+ */
 const COMMANDS = {
   walk: { name: "前進", pattern: ['pata', 'pata', 'pata', 'pon'], keys: 'A A A S' },
-  retreat: { name: "後退", pattern: ['pon', 'pata', 'pon', 'pata'], keys: 'S A S A' },
   attack: { name: "射撃", pattern: ['pon', 'pon', 'pata', 'pon'], keys: 'S S A S' },
+  retreat: { name: "後退", pattern: ['pon', 'pata', 'pon', 'pata'], keys: 'S A S A' },
   jump: { name: "ジャンプ", pattern: ['pon', 'chaka', 'pon', 'chaka'], keys: 'S D S D' },
   duck: { name: "スライド", pattern: ['chaka', 'pon', 'chaka', 'pon'], keys: 'D S D S' },
   defend: { name: "防御", pattern: ['chaka', 'chaka', 'pata', 'pon'], keys: 'D D A S', minEvo: 1 },
@@ -307,7 +495,10 @@ const COMMANDS = {
   miracle: { name: "E缶", pattern: ['don', 'don', 'don', 'don'], keys: 'F F F F', minEvo: 3, feverOnly: true }
 };
 
-// アーマー換装
+/**
+ * レベルアップに応じて換装されるロックマンのサイバーアーマー形態。
+ * @type {Array.<{name: string, minLevel: number, avatar: string, desc: string}>}
+ */
 const EVO_STEPS = [
   { name: "NORMAL ROCK", minLevel: 1, avatar: "🤖", desc: "初期アーマー。安定した通常戦闘能力。" },
   { name: "RUSH GEAR", minLevel: 5, avatar: "🐕", desc: "ラッシュ合体装甲。防御プログラム『D D A S』展開可能。" },
@@ -319,30 +510,91 @@ const EVO_STEPS = [
 let canvas = null;
 let ctx = null;
 
-// ==========================================
-// 4. 背景描画 (サイバー都市の遠景と格子状ネオン)
-// ==========================================
+/**
+ * ゲーム画面の超リッチな「電脳サイバースペース」背景を描画します。
+ * バイナリ雨、脈動する巨大ネオンスリットサン、ホログラフィック回路ビル、
+ * そして拍子と同期して波打つ3Dパースペクティブグリッド床をリアルタイムに描画します。
+ */
 function drawBackground() {
   if (!canvas || !ctx) return;
   const width = canvas.width;
   const height = canvas.height;
   
-  // 1. 空のグラデーション
+  // 1. 背景空グラデーション (フィーバー時はサイケデリック、通常時はディープネイビー)
   const skyGrad = ctx.createLinearGradient(0, 0, 0, 300);
   if (state.fever) {
-    skyGrad.addColorStop(0, '#3a0058');
-    skyGrad.addColorStop(0.5, '#780068');
-    skyGrad.addColorStop(1, '#24003d');
+    skyGrad.addColorStop(0, '#2b0042');
+    skyGrad.addColorStop(0.5, '#6a005c');
+    skyGrad.addColorStop(1, '#1b002c');
   } else {
-    skyGrad.addColorStop(0, '#0a103c');
-    skyGrad.addColorStop(0.6, '#182b75');
-    skyGrad.addColorStop(1, '#2c43ad');
+    skyGrad.addColorStop(0, '#040824');
+    skyGrad.addColorStop(0.6, '#0b164f');
+    skyGrad.addColorStop(1, '#182b8a');
   }
   ctx.fillStyle = skyGrad;
   ctx.fillRect(0, 0, width, 300);
 
-  // 2. 遠景のサイバーシティビルシルエット
-  ctx.fillStyle = state.fever ? 'rgba(75, 10, 90, 0.45)' : 'rgba(28, 48, 120, 0.45)';
+  // --- A. デジタル・マトリックス・フォール (0と1のバイナリの雨) ---
+  // ステートレスな決定論的ノイズでシアン色に流れる情報雨を降らせます。
+  ctx.fillStyle = state.fever ? 'rgba(255, 63, 222, 0.16)' : 'rgba(0, 240, 255, 0.16)';
+  ctx.font = '8px var(--font-pixel)';
+  ctx.textAlign = 'center';
+  const binaryColumns = 30;
+  for (let col = 0; col < binaryColumns; col++) {
+    const colX = (width / binaryColumns) * col + 12;
+    const speed = 1.0 + Math.abs(Math.sin(col * 3.14)) * 0.8;
+    const offset = (Date.now() * 0.08 * speed) % 300;
+    for (let row = 0; row < 12; row++) {
+      const charY = (row * 26 + offset) % 300;
+      // 0 または 1 を周期演算で決定
+      const binaryVal = Math.floor(Math.sin(col * row + Date.now() * 0.001) + 1.5) % 2;
+      ctx.fillText(binaryVal.toString(), colX, charY);
+    }
+  }
+
+  // --- B. 空に向かって昇るデータシグナルレーザービーム ---
+  ctx.save();
+  ctx.strokeStyle = state.fever ? 'rgba(255, 251, 0, 0.22)' : 'rgba(0, 240, 255, 0.22)';
+  ctx.lineWidth = 1.2;
+  for (let bi = 0; bi < 3; bi++) {
+    const bx = ((Date.now() * 0.04 + bi * 280) % width);
+    ctx.beginPath();
+    ctx.moveTo(bx, 300);
+    ctx.lineTo(bx, 0);
+    ctx.stroke();
+  }
+  ctx.restore();
+
+  // --- C. 巨大ホログラフィック・ネオンスリットサン (Synthwave/Cyberpunk風) ---
+  // BGMの拍に合わせて巨大太陽が脈打つ（パルス）アニメーション。
+  ctx.save();
+  const beatPulse = 1.0 + Math.max(0, 1.0 - ((Date.now() - state.lastBeatTime) / state.beatInterval)) * 0.14;
+  const sunGrad = ctx.createLinearGradient(0, 40, 0, 220);
+  sunGrad.addColorStop(0, 'var(--mega-yellow)');
+  sunGrad.addColorStop(0.5, 'var(--mega-red)');
+  sunGrad.addColorStop(1, 'rgba(11, 22, 79, 0)');
+  ctx.fillStyle = sunGrad;
+  
+  ctx.shadowColor = 'var(--mega-red)';
+  ctx.shadowBlur = 24 * beatPulse;
+  
+  const sunR = 65 * beatPulse;
+  const sunX = width / 2;
+  const sunY = 120;
+  ctx.beginPath();
+  ctx.arc(sunX, sunY, sunR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  
+  // 太陽の横スリット（背景色で切り抜き）
+  ctx.fillStyle = state.fever ? '#1b002c' : '#0b164f';
+  for (let sy = sunY - sunR; sy < sunY + sunR; sy += 12) {
+    const sliceH = 2.5 + ((sy - (sunY - sunR)) / (sunR * 2)) * 6.5; // 下にいくほどスリットを太くする
+    ctx.fillRect(sunX - sunR - 15, sy, sunR * 2 + 30, sliceH);
+  }
+  ctx.restore();
+
+  // --- D. ホログラフィック基盤回路ビルスカイライン ---
   const buildings = [
     { x: 20, w: 45, h: 140 },
     { x: 90, w: 65, h: 200 },
@@ -355,22 +607,30 @@ function drawBackground() {
     { x: 640, w: 85, h: 210 },
     { x: 750, w: 45, h: 160 }
   ];
+
   buildings.forEach(b => {
+    // 半透明サイバー塗り
+    ctx.fillStyle = state.fever ? 'rgba(75, 10, 90, 0.38)' : 'rgba(11, 22, 79, 0.55)';
     ctx.fillRect(b.x, 300 - b.h, b.w, b.h);
-    // 窓の明かり
-    ctx.fillStyle = state.fever ? 'rgba(255, 63, 222, 0.4)' : 'rgba(0, 240, 255, 0.4)';
-    for (let wy = 300 - b.h + 20; wy < 290; wy += 30) {
-      for (let wx = b.x + 8; wx < b.x + b.w - 10; wx += 16) {
-        if (Math.sin(wx * wy) > -0.2) {
-          ctx.fillRect(wx, wy, 5, 8);
-        }
-      }
-    }
-    ctx.fillStyle = state.fever ? 'rgba(75, 10, 90, 0.45)' : 'rgba(28, 48, 120, 0.45)';
+    
+    // ネオンワイヤーフレーム輪郭線
+    ctx.strokeStyle = state.fever ? 'rgba(255, 63, 222, 0.65)' : 'rgba(0, 240, 255, 0.55)';
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(b.x, 300 - b.h, b.w, b.h);
+
+    // 電脳基盤の回路風ネオンライン (直角分岐)
+    ctx.strokeStyle = state.fever ? 'rgba(255, 251, 0, 0.28)' : 'rgba(0, 240, 255, 0.28)';
+    ctx.lineWidth = 1.0;
+    ctx.beginPath();
+    ctx.moveTo(b.x + b.w / 2, 300);
+    ctx.lineTo(b.x + b.w / 2, 300 - b.h * 0.68);
+    ctx.lineTo(b.x + b.w / 2 - 12, 300 - b.h * 0.68 - 12);
+    ctx.lineTo(b.x + b.w / 2 - 12, 300 - b.h * 0.9);
+    ctx.stroke();
   });
 
   // 3. 地面
-  ctx.fillStyle = '#202a5c';
+  ctx.fillStyle = '#060a28';
   ctx.fillRect(0, 300, width, 100);
   
   // 地平線ネオンライン
@@ -381,9 +641,13 @@ function drawBackground() {
   ctx.lineTo(width, 300);
   ctx.stroke();
 
-  // グリッド線
-  ctx.strokeStyle = state.fever ? 'rgba(228, 0, 88, 0.55)' : 'rgba(0, 240, 255, 0.45)';
-  ctx.lineWidth = 2;
+  // --- E. 脈動する3Dパースペクティブグリッド床 ---
+  // 横線と縦線のネオン強度が、BGMビートと同調して激しく点滅・脈動します。
+  const beatProgress = Math.max(0, 1.0 - ((Date.now() - state.lastBeatTime) / state.beatInterval));
+  ctx.strokeStyle = state.fever ? `rgba(255, 63, 222, ${0.48 + beatProgress * 0.52})` : `rgba(0, 240, 255, ${0.38 + beatProgress * 0.62})`;
+  ctx.lineWidth = 1.8 + beatProgress * 1.5;
+  
+  // 横方向グリッド
   const lineY = 300;
   for (let i = 0; i < 6; i++) {
     ctx.beginPath();
@@ -392,8 +656,7 @@ function drawBackground() {
     ctx.stroke();
   }
 
-  // 縦グリッド
-  const gridCount = 20;
+  // 縦方向グリッド
   for (let i = 0; i <= gridCount; i++) {
     const xTop = (width / gridCount) * i;
     const xBottom = ((width * 1.4) / gridCount) * i - (width * 0.2);
@@ -401,13 +664,22 @@ function drawBackground() {
     ctx.moveTo(xTop, 300);
     ctx.lineTo(xBottom, height);
     ctx.stroke();
+
+    // グリッド交点（コネクションノード）にネオンドットを配置
+    ctx.fillStyle = state.fever ? '#ff60d0' : '#00f0ff';
+    for (let j = 0; j < 6; j++) {
+      const cy = lineY + j * 20;
+      const tRatio = (cy - 300) / 100;
+      const cx = xTop + (xBottom - xTop) * tRatio;
+      ctx.fillRect(cx - 2, cy - 2, 4, 4);
+    }
   }
 
   // スクロール光線
-  const speedScale = state.phase === 'move' ? 3.0 : 1.0;
-  ctx.strokeStyle = state.fever ? 'rgba(255, 251, 0, 0.25)' : 'rgba(0, 240, 255, 0.25)';
+  const speedScale2 = state.phase === 'move' ? 3.0 : 1.0;
+  ctx.strokeStyle = state.fever ? 'rgba(255, 251, 0, 0.28)' : 'rgba(0, 240, 255, 0.28)';
   ctx.lineWidth = 3;
-  const flowSpeed = (Date.now() * 0.05 * speedScale) % 80;
+  const flowSpeed = (Date.now() * 0.05 * speedScale2) % 80;
   for (let x = -80; x < width + 80; x += 80) {
     ctx.beginPath();
     ctx.moveTo(x + flowSpeed, 300);
@@ -415,6 +687,7 @@ function drawBackground() {
     ctx.stroke();
   }
 
+  // 進行表示HUD
   if (state.phase === 'move') {
     ctx.fillStyle = 'var(--mega-yellow)';
     ctx.font = 'bold 10px var(--font-pixel)';
@@ -426,9 +699,9 @@ function drawBackground() {
   }
 }
 
-// ==========================================
-// 4b. カッコよくなったロックマン描画
-// ==========================================
+/**
+ * 主人公（ロックマン）を「電脳×音楽」の細密ドット液晶テーマでCanvas上にレンダリングします。
+ */
 function drawPlayer() {
   if (!ctx) return;
   const p = state.player;
@@ -449,20 +722,20 @@ function drawPlayer() {
   const anim = state.playerActionAnim;
   if (anim) {
     const time = (Date.now() - anim.start) / 2000;
-    if (anim.type === 'walk') { // DASH
+    if (anim.type === 'walk') {
       const hop = Math.sin(time * Math.PI * 4);
       y -= Math.max(0, hop * 10);
       x += (time < 0.5 ? time * 2 : 1) * 30;
       isSliding = true;
-    } else if (anim.type === 'retreat') { // RETREAT
+    } else if (anim.type === 'retreat') {
       const hop = Math.sin(time * Math.PI * 4);
       y -= Math.max(0, hop * 12);
       x -= (time < 0.5 ? time * 2 : 1) * 30;
-    } else if (anim.type === 'jump') { // JUMP
+    } else if (anim.type === 'jump') {
       const jumpHeight = Math.sin(time * Math.PI) * 75;
       y -= jumpHeight;
       isJumping = true;
-    } else if (anim.type === 'duck') { // DUCK / SLIDE
+    } else if (anim.type === 'duck') {
       scaleY = 0.45;
       y += 8;
       isSliding = true;
@@ -492,31 +765,34 @@ function drawPlayer() {
     x += Math.sin(Date.now() * 0.25) * 8;
   }
 
-  // 1. 光のエネルギーマフラー
+  // --- A. 電脳オーディオスペクトラム(背後ホログラフィック) ---
   ctx.save();
-  ctx.translate(x, y - 50);
-  const scarfWave = Math.sin(Date.now() * 0.012) * 8;
-  
-  const scarfGrad = ctx.createLinearGradient(0, 0, -50, scarfWave);
-  scarfGrad.addColorStop(0, 'rgba(0, 240, 255, 0.85)');
-  scarfGrad.addColorStop(0.5, 'rgba(255, 251, 0, 0.6)');
-  scarfGrad.addColorStop(1, 'rgba(0, 240, 255, 0)');
-  
-  ctx.fillStyle = scarfGrad;
-  ctx.beginPath();
-  ctx.moveTo(-10, -5);
-  ctx.quadraticCurveTo(-35, scarfWave - 15, -60, scarfWave);
-  ctx.quadraticCurveTo(-35, scarfWave + 15, -10, 10);
-  ctx.closePath();
-  ctx.fill();
+  ctx.translate(x - 38, y - 82);
+  ctx.fillStyle = 'rgba(0, 240, 255, 0.4)';
+  const t = Date.now() * 0.015;
+  for (let i = 0; i < 5; i++) {
+    const h = 8 + Math.abs(Math.sin(t + i * 0.7)) * 32;
+    ctx.fillRect(i * 5, 30 - h, 3, h);
+  }
   ctx.restore();
 
-  if (state.isCharged || chargeFlash) {
-    const flashIndex = Math.floor(Date.now() / 50) % 3;
-    if (flashIndex === 0) ctx.fillStyle = 'var(--mega-yellow)';
-    else if (flashIndex === 1) ctx.fillStyle = '#ffffff';
-    else ctx.fillStyle = 'var(--mega-cyan)';
+  // --- B. 五線譜＆ネオン音符マフラー ---
+  ctx.save();
+  ctx.translate(x, y - 50);
+  const scarfWave = Math.sin(Date.now() * 0.015) * 8;
+  ctx.strokeStyle = 'rgba(0, 240, 255, 0.7)';
+  ctx.lineWidth = 1.5;
+  for (let li = 0; li < 5; li++) {
+    ctx.beginPath();
+    ctx.moveTo(-10, -10 + li * 3.5);
+    ctx.quadraticCurveTo(-35, scarfWave - 15 + li * 3.5, -65, scarfWave + li * 3.5);
+    ctx.stroke();
   }
+  const notePos = (Date.now() * 0.04) % 55;
+  ctx.fillStyle = 'var(--mega-yellow)';
+  ctx.fillRect(-10 - notePos, scarfWave - 8 + Math.sin(notePos * 0.12) * 6, 3, 3);
+  ctx.fillRect(-25 - ((notePos + 25) % 55), scarfWave - 4 + Math.sin((notePos + 25) * 0.12) * 6, 3, 3);
+  ctx.restore();
 
   ctx.translate(x, y);
   ctx.scale(1, scaleY);
@@ -525,140 +801,141 @@ function drawPlayer() {
     ctx.rotate(0.12);
   }
 
-  let suitColor = 'var(--mega-blue)';
-  let accentColor = 'var(--mega-cyan)';
-  if (p.evoIndex === 1) { suitColor = 'var(--mega-red)'; accentColor = '#fff'; }
-  else if (p.evoIndex === 2) { suitColor = '#2b2b2b'; accentColor = 'var(--mega-yellow)'; }
-  else if (p.evoIndex === 3) { suitColor = '#6011a4'; accentColor = '#ffd000'; }
-  else if (p.evoIndex === 4) { suitColor = '#10052c'; accentColor = '#ff3fde'; }
-
-  if (state.fever) {
-    const isGoldTick = Math.floor(Date.now() / 60) % 2 === 0;
-    suitColor = isGoldTick ? 'var(--mega-yellow)' : '#fff';
-    accentColor = isGoldTick ? '#fff' : 'var(--mega-yellow)';
-  }
-
-  if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
-    suitColor = '#fff';
-    accentColor = '#888';
-  }
-
-  // 2. 足
-  ctx.fillStyle = suitColor;
-  if (isJumping) {
-    ctx.fillRect(-12, -18, 8, 8);
-    ctx.fillRect(4, -18, 8, 8);
-    ctx.fillStyle = accentColor;
-    ctx.fillRect(-15, -12, 10, 5);
-    ctx.fillRect(2, -12, 10, 5);
-  } else {
-    ctx.fillRect(-15, -12, 10, 12);
-    ctx.fillRect(5, -12, 10, 12);
-    ctx.fillStyle = accentColor;
-    ctx.fillRect(-18, -4, 12, 5);
-    ctx.fillRect(4, -4, 12, 5);
-  }
-
-  // 3. 胴体
-  ctx.fillStyle = suitColor;
-  ctx.beginPath();
-  ctx.arc(0, -25, 18, 0, Math.PI*2);
-  ctx.fill();
-  
-  ctx.fillStyle = accentColor;
-  ctx.fillRect(-10, -28, 20, 10);
-  
-  ctx.fillStyle = '#ffffff';
-  ctx.fillRect(-6, -26, 12, 2);
-
-  // 4. 頭部
-  ctx.fillStyle = suitColor;
-  ctx.beginPath();
-  ctx.arc(2, -55, 18, 0, Math.PI * 2);
-  ctx.fill();
-  
-  ctx.fillStyle = 'var(--mega-yellow)';
-  ctx.beginPath();
-  ctx.moveTo(1, -73);
-  ctx.lineTo(8, -65);
-  ctx.lineTo(-4, -65);
-  ctx.closePath();
-  ctx.fill();
-  
-  ctx.fillStyle = 'var(--mega-red)';
-  ctx.beginPath();
-  ctx.arc(2, -67, 3, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#ffdbb5';
-  ctx.beginPath();
-  ctx.arc(6, -52, 12, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = accentColor;
-  ctx.beginPath();
-  ctx.arc(-13, -55, 7, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#000000';
-  ctx.beginPath();
-  ctx.arc(-13, -55, 4, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.fillStyle = '#ffffff';
-  ctx.beginPath();
-  ctx.arc(-13, -55, 2, 0, Math.PI * 2);
-  ctx.fill();
-
-  ctx.fillStyle = '#000000';
-  ctx.beginPath();
-  ctx.moveTo(6, -58);
-  ctx.lineTo(13, -58);
-  ctx.lineTo(11, -50);
-  ctx.lineTo(8, -50);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = 'var(--mega-cyan)';
-  ctx.fillRect(8, -55, 2, 4);
-
-  // 5. バスター
-  ctx.save();
-  ctx.translate(14, -28);
-  ctx.rotate(weaponRot);
-  
-  let glowColor = null;
-  if (wp.rarity === 'uncommon') glowColor = 'var(--neon-green)';
-  else if (wp.rarity === 'rare') glowColor = 'var(--mega-cyan)';
-  else if (wp.rarity === 'legendary') glowColor = 'var(--mega-yellow)';
-
-  if (glowColor) {
-    ctx.shadowColor = glowColor;
-    ctx.shadowBlur = 10;
-  }
-
-  ctx.fillStyle = suitColor;
-  ctx.fillRect(0, -6, 17, 12);
-  
-  ctx.fillStyle = accentColor;
-  ctx.fillRect(4, -5, 8, 2);
-  ctx.fillRect(4, 3, 8, 2);
-
-  ctx.fillStyle = glowColor || 'var(--mega-yellow)';
-  ctx.fillRect(17, -5, 3, 10);
-  
-  if (showMuzzleFlash) {
+  // --- F. リアル・ドットスプライト描画 (ダウンロードアセット対応) ---
+  if (playerSprite.complete && playerSprite.naturalWidth !== 0) {
     ctx.save();
-    ctx.strokeStyle = '#ffffff';
+    ctx.drawImage(playerSprite, -32, -75, 64, 75);
+
+    // 被弾時の赤・白フラッシュ効果
+    if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      ctx.fillRect(-32, -75, 64, 75);
+    }
+    ctx.restore();
+  } else {
+    // --- G. フォールバック・ベクター液晶ドットキャラクター描画 ---
+    let suitColor = 'var(--mega-blue)';
+    let accentColor = 'var(--mega-cyan)';
+    if (p.evoIndex === 1) { suitColor = 'var(--mega-red)'; accentColor = '#fff'; }
+    else if (p.evoIndex === 2) { suitColor = '#2b2b2b'; accentColor = 'var(--mega-yellow)'; }
+    else if (p.evoIndex === 3) { suitColor = '#6011a4'; accentColor = '#ffd000'; }
+    else if (p.evoIndex === 4) { suitColor = '#10052c'; accentColor = '#ff3fde'; }
+
+    if (state.fever) {
+      const isGoldTick = Math.floor(Date.now() / 60) % 2 === 0;
+      suitColor = isGoldTick ? 'var(--mega-yellow)' : '#fff';
+      accentColor = isGoldTick ? '#fff' : 'var(--mega-yellow)';
+    }
+
+    if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
+      suitColor = '#fff';
+      accentColor = '#888';
+    }
+
+    // 1. 足パーツ
+    ctx.fillStyle = suitColor;
+    if (isJumping) {
+      ctx.fillRect(-12, -18, 8, 8);
+      ctx.fillRect(4, -18, 8, 8);
+      ctx.fillStyle = accentColor;
+      ctx.fillRect(-15, -12, 10, 5);
+      ctx.fillRect(2, -12, 10, 5);
+    } else {
+      ctx.fillRect(-15, -12, 10, 12);
+      ctx.fillRect(5, -12, 10, 12);
+      ctx.fillStyle = accentColor;
+      ctx.fillRect(-18, -4, 12, 5);
+      ctx.fillRect(4, -4, 12, 5);
+    }
+
+    // 2. 電脳コアボディアーマー
+    ctx.fillStyle = suitColor;
+    ctx.fillRect(-16, -41, 32, 30);
+    
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(-10, -32, 20, 10);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(-6, -30, 12, 2);
+
+    // 3. ヘルメット
+    ctx.fillStyle = suitColor;
+    ctx.fillRect(-14, -68, 30, 28);
+    ctx.fillRect(-10, -71, 22, 4);
+
+    // C. サイバー・ネオンヘッドホン
+    ctx.strokeStyle = 'var(--mega-yellow)';
     ctx.lineWidth = 3;
-    ctx.shadowColor = glowColor || 'var(--mega-cyan)';
-    ctx.shadowBlur = 15;
     ctx.beginPath();
-    ctx.arc(22, 0, 12, -Math.PI*0.5, Math.PI*0.5);
+    ctx.arc(1, -54, 17, Math.PI, 0);
     ctx.stroke();
+    
+    ctx.fillStyle = 'var(--neon-green)';
+    ctx.shadowColor = 'var(--neon-green)';
+    ctx.shadowBlur = 6;
+    ctx.fillRect(-17, -60, 5, 12);
+    ctx.fillRect(14, -60, 5, 12);
+    ctx.shadowBlur = 0;
+
+    // 顔
+    ctx.fillStyle = '#ffdbb5';
+    ctx.fillRect(-8, -54, 20, 14);
+
+    // D. イコライザーバイザー
+    ctx.fillStyle = 'rgba(0, 240, 255, 0.85)';
+    ctx.shadowColor = 'var(--mega-cyan)';
+    ctx.shadowBlur = 8;
+    ctx.fillRect(-9, -53, 16, 7);
+    ctx.shadowBlur = 0;
+    
+    ctx.fillStyle = '#ffffff';
+    const vTime = Date.now() * 0.02;
+    for (let bi = 0; bi < 4; bi++) {
+      const barH = 1 + Math.abs(Math.sin(vTime + bi * 1.2)) * 5;
+      ctx.fillRect(-8 + bi*4, -53 + (6 - barH), 2, barH);
+    }
+
+    // 4. 音符バスター
+    ctx.save();
+    ctx.translate(14, -26);
+    ctx.rotate(weaponRot);
+    
+    let glowColor = null;
+    if (wp.rarity === 'uncommon') glowColor = 'var(--neon-green)';
+    else if (wp.rarity === 'rare') glowColor = 'var(--mega-cyan)';
+    else if (wp.rarity === 'legendary') glowColor = 'var(--mega-yellow)';
+
+    if (glowColor) {
+      ctx.shadowColor = glowColor;
+      ctx.shadowBlur = 10;
+    }
+
+    ctx.fillStyle = suitColor;
+    ctx.fillRect(0, -6, 17, 12);
+    
+    ctx.fillStyle = accentColor;
+    ctx.fillRect(4, -5, 8, 2);
+    ctx.fillRect(4, 3, 8, 2);
+
+    ctx.fillStyle = glowColor || 'var(--mega-yellow)';
+    ctx.fillRect(17, -5, 3, 10);
+    
+    if (showMuzzleFlash) {
+      ctx.save();
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 3;
+      ctx.shadowColor = glowColor || 'var(--mega-cyan)';
+      ctx.shadowBlur = 15;
+      ctx.beginPath();
+      ctx.arc(22, 0, 10, -Math.PI*0.5, Math.PI*0.5);
+      ctx.stroke();
+      ctx.restore();
+    }
+
     ctx.restore();
   }
 
-  ctx.restore();
-
-  // 7. シールド
+  // --- H. アクティブ・バトルエフェクトの描画 ---
   if (shieldActive) {
     ctx.save();
     ctx.strokeStyle = 'var(--mega-red)';
@@ -673,7 +950,6 @@ function drawPlayer() {
     ctx.restore();
   }
 
-  // 8. チャージ稲妻エフェクト
   if (state.isCharged) {
     ctx.save();
     ctx.strokeStyle = '#ffffff';
@@ -686,7 +962,6 @@ function drawPlayer() {
       ctx.beginPath();
       ctx.moveTo(rx, ry);
       ctx.lineTo(rx + (Math.random() - 0.5) * 15, ry + (Math.random() - 0.5) * 15);
-      ctx.lineTo(rx + (Math.random() - 0.5) * 30, ry + (Math.random() - 0.5) * 30);
       ctx.stroke();
     }
     ctx.restore();
@@ -703,10 +978,31 @@ function drawPlayer() {
     ctx.restore();
   }
 
+  // --- I. 細密液晶ドットグリッドのオーバーレイ (画像にも適用) ---
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0, 12, 45, 0.24)';
+  ctx.lineWidth = 1;
+  const gridSpacing = 3;
+  for (let gx = -22; gx < 22; gx += gridSpacing) {
+    ctx.beginPath();
+    ctx.moveTo(gx, -75);
+    ctx.lineTo(gx, 10);
+    ctx.stroke();
+  }
+  for (let gy = -75; gy < 10; gy += gridSpacing) {
+    ctx.beginPath();
+    ctx.moveTo(-22, gy);
+    ctx.lineTo(22, gy);
+    ctx.stroke();
+  }
+  ctx.restore();
+
   ctx.restore();
 }
 
-// 敵ロボットの描画
+/**
+ * 敵ロボットを描画します。
+ */
 function drawEnemy() {
   if (!ctx || !state.enemy || state.phase !== 'combat') return;
   const e = state.enemy;
@@ -742,190 +1038,184 @@ function drawEnemy() {
   ctx.scale(1, scaleY);
   ctx.rotate(bodyRot);
 
-  if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
-    ctx.fillStyle = '#fff';
-    ctx.strokeStyle = 'var(--mega-red)';
-  }
-
+  // --- F. リアル・ドットスプライト描画 (ダウンロードアセット対応) ---
   let headTopY = -45;
+  let eWidth = 20;
+  let eHeight = 45;
 
-  if (e.isBoss) {
-    headTopY = e.type === 'archfiend' ? -150 : -95;
-    
-    if (e.type === 'dodonga') { // カットマン
-      if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-        ctx.fillStyle = '#d01010';
-        ctx.strokeStyle = '#fff';
-      }
-      ctx.lineWidth = 3;
-
-      ctx.beginPath();
-      ctx.arc(0, -30, 22, 0, Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(0, -65, 16, 0, Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.strokeStyle = '#cccccc';
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.arc(0, -85, 14, Math.PI*1.1, Math.PI*1.9);
-      ctx.stroke();
-
-      ctx.fillStyle = 'var(--mega-yellow)';
-      ctx.fillRect(-6, -70, 4, 6);
-      ctx.fillRect(2, -70, 4, 6);
+  if (enemySprite.complete && enemySprite.naturalWidth !== 0) {
+    ctx.save();
+    if (e.isBoss) {
+      headTopY = e.type === 'archfiend' ? -150 : -95;
+      eWidth = e.type === 'archfiend' ? 65 : 35;
+      eHeight = -headTopY;
       
-    } else if (e.type === 'chokkinna') { // バブルマン
-      if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-        ctx.fillStyle = '#008c5c';
-        ctx.strokeStyle = '#fff';
+      // ボスは巨大サイズで描画
+      ctx.drawImage(enemySprite, -eWidth - 20, -eHeight - 20, (eWidth + 20) * 2, (eHeight + 20));
+    } else {
+      eWidth = 22;
+      eHeight = 25;
+      // 雑魚は通常サイズ
+      ctx.drawImage(enemySprite, -25, -50, 50, 50);
+    }
+
+    // 被弾時の赤・白フラッシュ効果
+    if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
+      ctx.globalCompositeOperation = 'source-atop';
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.75)';
+      if (e.isBoss) {
+        ctx.fillRect(-eWidth - 20, -eHeight - 20, (eWidth + 20) * 2, (eHeight + 20));
+      } else {
+        ctx.fillRect(-25, -50, 50, 50);
       }
-      ctx.lineWidth = 3;
+    }
+    ctx.restore();
+  } else {
+    // --- G. フォールバック・ベクター敵ロボット描画 ---
+    if (isHurt && Math.floor(Date.now() / 40) % 2 === 0) {
+      ctx.fillStyle = '#fff';
+      ctx.strokeStyle = 'var(--mega-red)';
+    }
 
-      ctx.beginPath();
-      ctx.ellipse(0, -25, 30, 18, 0, 0, Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#00a8f8';
-      ctx.beginPath();
-      ctx.arc(0, -50, 14, 0, Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.strokeStyle = 'var(--mega-yellow)';
-      ctx.lineWidth = 4;
-      ctx.strokeRect(-8, -54, 16, 8);
-
-      ctx.fillStyle = '#ff6000';
-      ctx.beginPath();
-      ctx.moveTo(15, -45);
-      ctx.lineTo(35, -55);
-      ctx.lineTo(25, -25);
-      ctx.closePath();
-      ctx.fill();
-
-    } else if (e.type === 'shushu') { // ウッドマン
-      if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-        ctx.fillStyle = '#8c5000';
-        ctx.strokeStyle = '#2b1b00';
-      }
-      ctx.lineWidth = 4;
-
-      ctx.fillRect(-30, -70, 60, 70);
+    if (e.isBoss) {
+      headTopY = e.type === 'archfiend' ? -150 : -95;
+      eWidth = e.type === 'archfiend' ? 65 : 35;
+      eHeight = -headTopY;
       
-      ctx.fillStyle = 'var(--mega-yellow)';
-      ctx.fillRect(-15, -55, 6, 6);
-      ctx.fillRect(9, -55, 6, 6);
+      if (e.type === 'dodonga') { // カットマン
+        if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
+          ctx.fillStyle = '#d01010';
+          ctx.strokeStyle = '#fff';
+        }
+        ctx.lineWidth = 3;
+        ctx.fillRect(-22, -45, 44, 45);
+        ctx.fillRect(-16, -75, 32, 30);
 
-      ctx.fillStyle = '#4c9800';
-      ctx.beginPath();
-      ctx.arc(-30, -65, 12, 0, Math.PI*2);
-      ctx.arc(30, -65, 12, 0, Math.PI*2);
-      ctx.fill();
+        ctx.strokeStyle = '#cccccc';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.arc(0, -85, 14, Math.PI*1.1, Math.PI*1.9);
+        ctx.stroke();
 
-    } else if (e.type === 'garuru') { // クイックマン
-      if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-        ctx.fillStyle = '#e40058';
-        ctx.strokeStyle = '#fff';
+        ctx.fillStyle = 'var(--mega-yellow)';
+        ctx.fillRect(-6, -65, 4, 6);
+        ctx.fillRect(2, -65, 4, 6);
+        
+      } else if (e.type === 'chokkinna') { // バブルマン
+        if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
+          ctx.fillStyle = '#008c5c';
+          ctx.strokeStyle = '#fff';
+        }
+        ctx.lineWidth = 3;
+        ctx.fillRect(-30, -38, 60, 38);
+        ctx.fillRect(-14, -62, 28, 24);
+
+        ctx.strokeStyle = 'var(--mega-yellow)';
+        ctx.lineWidth = 4;
+        ctx.strokeRect(-8, -54, 16, 8);
+
+        ctx.fillStyle = '#ff6000';
+        ctx.beginPath();
+        ctx.moveTo(15, -45);
+        ctx.lineTo(35, -55);
+        ctx.lineTo(25, -25);
+        ctx.closePath();
+        ctx.fill();
+
+      } else if (e.type === 'shushu') { // ウッドマン
+        if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
+          ctx.fillStyle = '#8c5000';
+          ctx.strokeStyle = '#2b1b00';
+        }
+        ctx.lineWidth = 4;
+        ctx.fillRect(-30, -70, 60, 70);
+        
+        ctx.fillStyle = 'var(--mega-yellow)';
+        ctx.fillRect(-15, -55, 6, 6);
+        ctx.fillRect(9, -55, 6, 6);
+
+        ctx.fillStyle = '#4c9800';
+        ctx.beginPath();
+        ctx.arc(-30, -65, 12, 0, Math.PI*2);
+        ctx.arc(30, -65, 12, 0, Math.PI*2);
+        ctx.fill();
+
+      } else if (e.type === 'garuru') { // クイックマン
+        if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
+          ctx.fillStyle = '#e40058';
+          ctx.strokeStyle = '#fff';
+        }
+        ctx.lineWidth = 3;
+        ctx.fillRect(-22, -50, 44, 50);
+        ctx.fillRect(-14, -78, 28, 28);
+
+        ctx.strokeStyle = 'var(--mega-yellow)';
+        ctx.lineWidth = 6;
+        ctx.beginPath();
+        ctx.moveTo(-20, -84);
+        ctx.lineTo(0, -98);
+        ctx.lineTo(20, -84);
+        ctx.stroke();
+
+      } else if (e.type === 'archfiend') { // ワイリーマシン
+        if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
+          ctx.fillStyle = '#cccccc';
+          ctx.strokeStyle = '#000';
+        }
+        ctx.lineWidth = 4;
+        ctx.fillRect(-55, -100, 110, 80);
+
+        ctx.fillStyle = '#1c002c';
+        ctx.fillRect(-34, -85, 24, 20);
+        ctx.fillRect(10, -85, 24, 20);
+
+        ctx.fillStyle = 'var(--mega-red)';
+        ctx.fillRect(-26, -78, 8, 8);
+        ctx.fillRect(18, -78, 8, 8);
+
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(-20, -45, 8, 10);
+        ctx.fillRect(-8, -45, 8, 10);
+        ctx.fillRect(4, -45, 8, 10);
+        ctx.fillRect(16, -45, 8, 10);
       }
-      ctx.lineWidth = 3;
-
-      ctx.beginPath();
-      ctx.moveTo(-15, 0);
-      ctx.lineTo(-25, -50);
-      ctx.lineTo(10, -50);
-      ctx.lineTo(15, 0);
-      ctx.closePath();
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.beginPath();
-      ctx.arc(-5, -68, 14, 0, Math.PI*2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.strokeStyle = 'var(--mega-yellow)';
-      ctx.lineWidth = 6;
-      ctx.beginPath();
-      ctx.moveTo(-20, -78);
-      ctx.lineTo(0, -96);
-      ctx.lineTo(20, -78);
-      ctx.stroke();
-
-    } else if (e.type === 'archfiend') { // ワイリーマシン
+    } else {
+      eWidth = 22;
+      eHeight = 25;
       if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-        ctx.fillStyle = '#cccccc';
+        ctx.fillStyle = 'var(--mega-yellow)';
         ctx.strokeStyle = '#000';
       }
-      ctx.lineWidth = 4;
-
-      ctx.beginPath();
-      ctx.ellipse(0, -70, 60, 45, 0, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.stroke();
-
-      ctx.fillStyle = '#1c002c';
-      ctx.beginPath();
-      ctx.arc(-22, -80, 15, 0, Math.PI*2);
-      ctx.arc(22, -80, 15, 0, Math.PI*2);
-      ctx.fill();
-
-      ctx.fillStyle = 'var(--mega-red)';
-      ctx.beginPath();
-      ctx.arc(-20 + Math.sin(Date.now()*0.02)*3, -80, 5, 0, Math.PI*2);
-      ctx.arc(20 + Math.sin(Date.now()*0.02)*3, -80, 5, 0, Math.PI*2);
-      ctx.fill();
+      ctx.lineWidth = 3;
+      ctx.fillRect(-22, -22, 44, 22);
 
       ctx.fillStyle = '#fff';
-      ctx.fillRect(-20, -45, 8, 10);
-      ctx.fillRect(-8, -45, 8, 10);
-      ctx.fillRect(4, -45, 8, 10);
-      ctx.fillRect(16, -45, 8, 10);
-      
-      ctx.strokeStyle = 'var(--mega-red)';
-      ctx.lineWidth = 3;
-      ctx.beginPath();
-      ctx.moveTo(-45, -110);
-      ctx.lineTo(-30, -95);
-      ctx.lineTo(-15, -110);
-      ctx.stroke();
-    }
-  } else {
-    // メットール
-    if (!(isHurt && Math.floor(Date.now() / 40) % 2 === 0)) {
-      ctx.fillStyle = 'var(--mega-yellow)';
-      ctx.strokeStyle = '#000';
-    }
-    ctx.lineWidth = 3;
+      ctx.fillRect(-4, -18, 8, 12);
+      ctx.fillRect(-10, -12, 20, 4);
 
-    ctx.beginPath();
-    ctx.arc(0, -22, 22, Math.PI, 0);
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(-4, -20, 8, 16);
-    ctx.fillRect(-10, -14, 20, 6);
-
-    ctx.fillStyle = 'var(--neon-green)';
-    ctx.fillRect(-18, -4, 12, 5);
-    ctx.fillRect(6, -4, 12, 5);
-
-    const isAttacking = anim && anim.type === 'attack';
-    if (isAttacking) {
-      ctx.fillStyle = '#ffdbb5';
-      ctx.fillRect(-12, -15, 24, 11);
-      ctx.fillStyle = '#000';
-      ctx.fillRect(-6, -12, 2, 6);
-      ctx.fillRect(4, -12, 2, 6);
+      ctx.fillStyle = 'var(--neon-green)';
+      ctx.fillRect(-18, -4, 12, 5);
+      ctx.fillRect(6, -4, 12, 5);
     }
   }
+
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0, 10, 30, 0.26)';
+  ctx.lineWidth = 1;
+  const gridSpacing = 3;
+  for (let gx = -eWidth; gx < eWidth; gx += gridSpacing) {
+    ctx.beginPath();
+    ctx.moveTo(gx, -eHeight);
+    ctx.lineTo(gx, 5);
+    ctx.stroke();
+  }
+  for (let gy = -eHeight; gy < 5; gy += gridSpacing) {
+    ctx.beginPath();
+    ctx.moveTo(-eWidth, gy);
+    ctx.lineTo(eWidth, gy);
+    ctx.stroke();
+  }
+  ctx.restore();
 
   // 敵頭上HPバー
   const barWidth = e.isBoss ? 150 : 70;
@@ -965,7 +1255,9 @@ function drawEnemy() {
   ctx.restore();
 }
 
-// パーティクル更新
+/**
+ * 画面上のエフェクトパーティクルを更新・描画します。
+ */
 function updateAndDrawParticles() {
   if (!ctx) return;
   const now = Date.now();
@@ -996,9 +1288,18 @@ function updateAndDrawParticles() {
       ctx.shadowColor = p.color;
       ctx.shadowBlur = 10;
       ctx.fillStyle = p.color;
-      ctx.beginPath();
-      ctx.arc(p.x, p.y, p.size, 0, Math.PI*2);
-      ctx.fill();
+      ctx.save();
+      ctx.translate(p.x, p.y);
+      ctx.fillRect(-5, 2, 4, 4);
+      ctx.fillRect(0, -6, 2, 10);
+      ctx.fillRect(1, -6, 6, 2);
+      
+      if (p.size > 8) {
+        ctx.fillRect(3, 0, 4, 4);
+        ctx.fillRect(8, -8, 2, 10);
+        ctx.fillRect(1, -8, 8, 2);
+      }
+      ctx.restore();
     } else if (p.isRing) {
       ctx.globalAlpha = 1 - pct;
       ctx.strokeStyle = p.color;
@@ -1064,7 +1365,6 @@ function spawnHitParticles(x, y, color) {
   }
 }
 
-// 弾丸生成
 function spawnPlayerBullet(startX, startY, color, size, isUltimate) {
   const bulletCount = isUltimate ? 3 : 1;
   for (let i = 0; i < bulletCount; i++) {
@@ -1082,7 +1382,6 @@ function spawnPlayerBullet(startX, startY, color, size, isUltimate) {
   }
 }
 
-// メインループ
 function gameLoop() {
   if (!state.gameActive) return;
 
@@ -1251,21 +1550,6 @@ function handleMeasureEnd() {
   updateUI();
 }
 
-function handleMiss(message) {
-  const feedbackEl = document.getElementById('rhythm-feedback');
-  feedbackEl.innerText = message;
-  feedbackEl.className = "rhythm-feedback miss";
-  
-  state.combo = 0;
-  state.fever = false;
-  state.feverMeter = Math.max(0, state.feverMeter - 25);
-  document.getElementById('fever-banner').classList.add('hidden');
-  
-  state.nextAction = null;
-  state.isCharged = false;
-}
-
-// ドラム入力判定
 function triggerDrumInput(type, padId) {
   sounds.playDrum(type);
 
@@ -1282,8 +1566,19 @@ function triggerDrumInput(type, padId) {
   const elapsed = now - state.lastBeatTime;
   
   let diff = elapsed;
+  let isEarly = false;
   if (elapsed > state.beatInterval / 2) {
     diff = state.beatInterval - elapsed;
+    isEarly = true;
+  } else {
+    diff = elapsed;
+    isEarly = false;
+  }
+
+  if (type === 'pata') {
+    diff = diff * 0.55;
+  } else if (isEarly) {
+    diff = diff * 0.7;
   }
 
   state.currentInputs.push({
@@ -1295,7 +1590,6 @@ function triggerDrumInput(type, padId) {
   if (echoEl) {
     const note = document.createElement('div');
     note.className = `echo-note ${type}`;
-    // エコーの擬音テキストもキー名に合わせる
     let keyChar = "A";
     if (type === 'pon') keyChar = "S";
     else if (type === 'chaka') keyChar = "D";
@@ -1318,9 +1612,20 @@ function triggerDrumInput(type, padId) {
   spawnTextParticle(150 + inputIndex * 130, 220, timingText, color);
 }
 
-// ==========================================
-// 6. アクション効果・移動・回避・ジャンプ・しゃがみ判定
-// ==========================================
+function handleMiss(message) {
+  const feedbackEl = document.getElementById('rhythm-feedback');
+  feedbackEl.innerText = message;
+  feedbackEl.className = "rhythm-feedback miss";
+  
+  state.combo = 0;
+  state.fever = false;
+  state.feverMeter = Math.max(0, state.feverMeter - 25);
+  document.getElementById('fever-banner').classList.add('hidden');
+  
+  state.nextAction = null;
+  state.isCharged = false;
+}
+
 function executeActionTurn(actionKey) {
   const p = state.player;
   const wp = WEAPONS_DB[p.equippedId] || WEAPONS_DB.wood_spear;
@@ -1341,9 +1646,8 @@ function executeActionTurn(actionKey) {
     });
   }
 
-  // 移動フェーズ中
   if (state.phase === 'move') {
-    if (actionKey === 'walk') { // DASH
+    if (actionKey === 'walk') {
       state.moveProgress++;
       state.combatLog = `前進プログラム実行... 次のエリアまであと [ ${state.moveRequired - state.moveProgress} ] ダッシュ！`;
       
@@ -1372,25 +1676,20 @@ function executeActionTurn(actionKey) {
 
   if (!state.enemy) return;
 
-  // 1. DASH
   if (actionKey === 'walk') {
     state.playerX = Math.min(state.enemyX - 100, state.playerX + 120);
     state.combatLog = `ダッシュ前進。現在X:${state.playerX} (敵距離:${Math.abs(state.enemyX - state.playerX)})`;
   } 
-  // 2. RETREAT
   else if (actionKey === 'retreat') {
     state.playerX = Math.max(80, state.playerX - 120);
     state.combatLog = `緊急後退。現在X:${state.playerX} (敵距離:${Math.abs(state.enemyX - state.playerX)})`;
   }
-  // 3. JUMP
   else if (actionKey === 'jump') {
     state.combatLog = "ジャンプ回避システム起動！";
   }
-  // 4. DUCK
   else if (actionKey === 'duck') {
     state.combatLog = "スライディング回避システム起動！";
   }
-  // 5. 射撃
   else if (actionKey === 'attack') {
     state.combatLog = "バスター射撃準備。";
     
@@ -1437,16 +1736,13 @@ function executeActionTurn(actionKey) {
       }
     }, state.beatInterval * 2.5);
   } 
-  // 6. 防壁
   else if (actionKey === 'defend') {
     state.combatLog = "シールド展開。";
   } 
-  // 7. 同調
   else if (actionKey === 'charge') {
     state.combatLog = "エネルギー同調チャージ。";
     state.isCharged = true;
   } 
-  // 8. E缶
   else if (actionKey === 'miracle') {
     state.combatLog = "E缶起動！全体爆破発射！";
     
@@ -1471,7 +1767,6 @@ function executeActionTurn(actionKey) {
     }, state.beatInterval * 2.5);
   }
 
-  // 敵の反撃
   setTimeout(() => {
     if (!state.gameActive || !state.enemy || state.enemy.hp <= 0 || state.phase !== 'combat') return;
 
@@ -1494,7 +1789,6 @@ function executeActionTurn(actionKey) {
     const distance = Math.abs(state.enemyX - state.playerX);
     let avoidSuccess = false;
 
-    // 回避判定
     if (distance > attackRange) {
       avoidSuccess = true;
       state.combatLog = `${state.enemy.name}の攻撃を間合い外で完全回避 (DODGE)！`;
@@ -1538,10 +1832,6 @@ function executeActionTurn(actionKey) {
 
   }, state.beatInterval * 3.5);
 }
-
-// ----------------------------------------
-// 7. ゲーム進行 (カプセル、討伐、ネジ)
-// ----------------------------------------
 
 function spawnEnemy() {
   const isBossWave = (state.distanceToBoss === 0);
@@ -1877,8 +2167,8 @@ function updateUI() {
 
   updateFooterCommandGuide();
 
-  // HUDコマンドガイドの解放状況
   const hudWalk = document.getElementById('hud-cmd-walk');
+  const hudAttack = document.getElementById('hud-cmd-attack');
   const hudRetreat = document.getElementById('hud-cmd-retreat');
   const hudJump = document.getElementById('hud-cmd-jump');
   const hudDuck = document.getElementById('hud-cmd-duck');
@@ -1887,6 +2177,7 @@ function updateUI() {
   const hudMiracle = document.getElementById('hud-cmd-miracle');
 
   if (hudWalk) hudWalk.classList.remove('locked');
+  if (hudAttack) hudAttack.classList.remove('locked');
   if (hudRetreat) hudRetreat.classList.remove('locked');
   if (hudJump) hudJump.classList.remove('locked');
   if (hudDuck) hudDuck.classList.remove('locked');
@@ -1913,7 +2204,6 @@ function updateUI() {
   }
 }
 
-// 縦型HPゲージをセグメントドットでレンダリング
 function renderVerticalHpBar(hp, maxHp) {
   const hpBarContainer = document.getElementById('mega-hp-bar');
   if (!hpBarContainer) return;
@@ -2084,7 +2374,7 @@ window.addEventListener('DOMContentLoaded', () => {
       state.player.inventory = ["wood_spear"];
       state.player.chests = [];
       state.player.evoIndex = 0;
-      state.player.unlockedCommands = ['walk', 'retreat', 'attack', 'jump', 'duck'];
+      state.player.unlockedCommands = ['walk', 'attack', 'retreat', 'jump', 'duck'];
       state.playerX = 200;
       
       state.stage = 1;
